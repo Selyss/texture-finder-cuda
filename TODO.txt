@@ -1,0 +1,5 @@
+set up tests so the functions do not need to be copied from the implementation
+add additional rotation generations for other versions
+make nicer CLI interface
+optimize cuda
+make code more modular
