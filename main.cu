@@ -17,6 +17,12 @@ struct BlockInfo
 };
 
 // TODO: implement the other versions of the texture rotation generation
+__device__ int staffordMix13(long z)
+{
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9L;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBL;
+    return static_cast<int>(z ^ (z >> 31));
+}
 
 // 1.13 - 1.21.1
 __device__ int getTextureLegacy(int x, int y, int z, int mod)
