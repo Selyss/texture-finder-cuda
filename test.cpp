@@ -19,13 +19,13 @@ int getTextureModern(int x, int y, int z, int mod)
 TEST_CASE("getTextureModern")
 {
     CHECK(getTextureModern(-1, 0, -1, 4) == 0);
-    CHECK(getTextureModern( 0, 0, -1, 4) == 3);
-    CHECK(getTextureModern( 1, 0, -1, 4) == 3);
-    CHECK(getTextureModern(-2, 0,  0, 4) == 3);
-    CHECK(getTextureModern(-1, 0,  0, 4) == 0);
-    CHECK(getTextureModern( 0, 0,  0, 4) == 2);
-    CHECK(getTextureModern( 1, 0,  0, 4) == 0);
-    CHECK(getTextureModern(-1, 0,  1, 4) == 3);
-    CHECK(getTextureModern( 0, 0,  1, 4) == 1);
-    CHECK(getTextureModern( 1, 0,  1, 4) == 0);
+    CHECK(getTextureModern(0, 0, -1, 4) == 3);
+    CHECK(getTextureModern(1, 0, -1, 4) == 3);
+    CHECK(getTextureModern(-2, 0, 0, 4) == 3);
+    CHECK(getTextureModern(-1, 0, 0, 4) == 0);
+    CHECK(getTextureModern(0, 0, 0, 4) == 2);
+    CHECK(getTextureModern(1, 0, 0, 4) == 0);
+    CHECK(getTextureModern(-1, 0, 1, 4) == 3);
+    CHECK(getTextureModern(0, 0, 1, 4) == 1);
+    CHECK(getTextureModern(1, 0, 1, 4) == 0);
 }
