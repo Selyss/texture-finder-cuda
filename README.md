@@ -1,4 +1,5 @@
 # texture-finder-cuda
+- Most of the resources in this README have been provided from [19MisterX98](https://github.com/19MisterX98)
 - Handles vanilla and sodium texture rotations
 - Runs on the GPU using CUDA
 - *Does not require the world seed*
@@ -7,35 +8,12 @@
 
 ### Texture Packs
 There are two texture packs that can be used to get texture rotations:\
-[Manual Texture Rotations]() \
-[Textures to Numbers]()
+[Manual Texture Rotations](https://github.com/19MisterX98/TextureRotations/releases/download/1/Manual_texture_rotations.zip) \
+[Textures to Numbers](https://github.com/19MisterX98/TextureRotations/releases/download/1/Textures_to_numbers.zip)
 
 ### Usage
 The "Manual Texture Rotations" pack retextures certain blocks that have block states into blocks that have texture rotations. \
-When you change the blockstate via debug stick, these blocks will change their visual rotation. This can be used to recreate screenshots and match all the block rotations used.
-
-Here is a list of the rotating blocks included in the pack, and what block they map to:
-
-<pre>
-Bedrock:        Beehive fill level
-Stone:
-Deepslate:      Bee nest fill level
-Path block:     Orange glazed terracotta orientation
-Dirt:           Brown glazed terracotta orientation
-Red Sand:       Red glazed terracotta orientation
-Grass block:    Lime glazed terracotta orientation
-Mycelium:       Purple glazed terracotta orientation
-Sand:           Yellow glazed terracotta orientation
-Concrete powder:White glazed terracotta orientation
-Podzol:         Cyan glazed terracotta orientation
-Lily pad:       Iron trapdoor orientation
-</pre>
-
-#### Before the pack:
-...
-
-#### After the pack:
-...
+When you change the blockstate via debug stick, these blocks will change their visual rotation. This can be used to recreate screenshots and match all the block rotations used. Read the usage instructions at https://github.com/19MisterX98/TextureRotations
 
 ## Obtaining Orientation
 The orientation of the formation is very important. It is important to try and get the direction of the recreation correct, or the results will be inaccurate. There are certain blocks that always face a certain direction no matter how they are placed.
@@ -54,12 +32,6 @@ Cobblestone
 ## Textures to Numbers
 After recreating the formation, overlay the "Textures to Numbers" resource pack.
 This will display the rotation number on each rotatable block.
-
-#### Before the pack
-...
-
-#### After the pack
-...
 
 ## Inputting Data
 Formation files can live anywhere, and have the `.txt` file extension. \
