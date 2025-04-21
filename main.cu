@@ -4,6 +4,11 @@
 #include <sstream>
 #include <vector>
 
+constexpr int MOD_TOP_BOTTOM = 4;
+constexpr int MOD_SIDE = 2;
+
+constexpr int MODERN_VERSION = 0;
+
 struct BlockInfo
 {
     int x, y, z;
@@ -75,7 +80,7 @@ __global__ void matchFormationKernel(int x_min, int x_max, int y_min, int y_max,
         int bx = x + tops_and_bottoms[i].x;
         int by = y + tops_and_bottoms[i].y;
         int bz = z + tops_and_bottoms[i].z;
-        int texture = (version == 0) ? getTextureModern(bx, by, bz, 4) : getTextureLegacy(bx, by, bz, 4);
+        int texture = (version == MODERN_VERSION) ? getTextureModern(bx, by, bz, MOD_TOP_BOTTOM) : getTextureLegacy(bx, by, bz, MOD_TOP_BOTTOM);
 
         // this is done instead of an if statement for performance reasons
         match &= (tops_and_bottoms[i].rotation == texture);
@@ -93,7 +98,7 @@ __global__ void matchFormationKernel(int x_min, int x_max, int y_min, int y_max,
         int cy = y + sides[i].y;
         int cz = z + sides[i].z;
 
-        int texture = (version == 0) ? getTextureModern(cx, cy, cz, 2) : getTextureLegacy(cx, cy, cz, 2);
+        int texture = (version == MODERN_VERSION) ? getTextureModern(cx, cy, cz, MOD_SIDE) : getTextureLegacy(cx, cy, cz, MOD_SIDE);
 
         match &= (sides[i].rotation == texture);
 
@@ -153,13 +158,13 @@ int main(int argc, char *argv[])
     std::string file = argv[8];
     int direction = std::stoi(argv[9]);
 
-    if (version == 0)
+    if (version == MODERN_VERSION)
     {
-        std::cout << "Version: getTextureModern" << std::endl;
+        std::cout << "Version: 1.21.2+" << std::endl;
     }
     else
     {
-        std::cout << "Version: getTextureLegacy" << std::endl;
+        std::cout << "Version: 1.13 - 1.21.1" << std::endl;
     }
 
     std::vector<BlockInfo> formation = parseFormationFile(file);

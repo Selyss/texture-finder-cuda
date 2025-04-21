@@ -1,7 +1,7 @@
 # texture-finder-cuda
 - Handles vanilla and sodium texture rotations
 - Runs on the GPU using CUDA
-- Does not require the world seed
+- *Does not require the world seed*
 
 ## Obtaining Rotations
 
@@ -38,18 +38,22 @@ Lily pad:       Iron trapdoor orientation
 ...
 
 ## Obtaining Orientation
-The orientation of the formation is very important. It is important to try and get the direction of the recreation correct, or the results will be inaccurate. There are certain blocks that always face a certain direction no matter how they are placed. \
+The orientation of the formation is very important. It is important to try and get the direction of the recreation correct, or the results will be inaccurate. There are certain blocks that always face a certain direction no matter how they are placed.
 
-These blocks are as follows: \
+These blocks are as follows:
 
 <pre>
+Glowstone
+Any Ore
+Prismarine
+Cobblestone
 ...
 </pre>
 
 
 ## Textures to Numbers
-After recreating the formation, overlay the "Textures to Numbers" resource pack. \
-This will display the rotation number on each rotatable block. \
+After recreating the formation, overlay the "Textures to Numbers" resource pack.
+This will display the rotation number on each rotatable block.
 
 #### Before the pack
 ...
@@ -78,12 +82,12 @@ It is recommended to get as many blocks as possible, and narrow down the possibl
 
 ## Parameters
 The parameters are passed into the program in the form of command line arguements:
-- x_min / x_max: range of the searched `x` coordinates
-- y_min / y_max: range of the searched `y` coordinates
-- z_min / z_max: range of the searched `z` coordinates
-- version: client version
-- file: the formation file
-- direction: the direction the formation is facing
+- `x_min` / `x_max`: range of the searched `x` coordinates
+- `y_min` / `y_max`: range of the searched `y` coordinates
+- `z_min` / `z_max`: range of the searched `z` coordinates
+- `version`: client version
+- `file`: the formation file
+- `direction`: the direction the formation is facing
 
 ## Version Table
 Depending on the version of the client, the mode will need to be changed.
@@ -102,4 +106,4 @@ Depending on the version of the client, the mode will need to be changed.
 | 4.9+           | 1.19.3+     | Uses the MC implementation |
 
 # Credits
-...
+https://github.com/19MisterX98/TextureRotations
