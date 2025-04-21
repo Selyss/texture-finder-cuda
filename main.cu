@@ -16,6 +16,9 @@ struct BlockInfo
     bool isSide;
 };
 
+__constant__ BlockInfo d_topsAndBottoms[1024];
+__constant__ BlockInfo d_sides[1024];
+
 // TODO: implement the other versions of the texture rotation generation
 __device__ int staffordMix13(long z)
 {
@@ -69,7 +72,7 @@ __host__ __device__ void rotateFormation(BlockInfo &block)
     }
 }
 
-__global__ void matchFormationKernel(int x_min, int x_max, int y_min, int y_max, int z_min, int z_max, BlockInfo *tops_and_bottoms, int tb_size, BlockInfo *sides, int side_size, int version)
+__global__ void matchFormationKernel(int x_min, int x_max, int y_min, int y_max, int z_min, int z_max, int tb_size, int side_size, int version)
 {
     int x = x_min + blockIdx.x * blockDim.x + threadIdx.x;
     int y = y_min + blockIdx.y * blockDim.y + threadIdx.y;
@@ -83,13 +86,13 @@ __global__ void matchFormationKernel(int x_min, int x_max, int y_min, int y_max,
 
     for (int i = 0; i < tb_size; i++)
     {
-        int bx = x + tops_and_bottoms[i].x;
-        int by = y + tops_and_bottoms[i].y;
-        int bz = z + tops_and_bottoms[i].z;
+        int bx = x + d_topsAndBottoms[i].x;
+        int by = y + d_topsAndBottoms[i].y;
+        int bz = z + d_topsAndBottoms[i].z;
         int texture = (version == MODERN_VERSION) ? getTextureModern(bx, by, bz, MOD_TOP_BOTTOM) : getTextureLegacy(bx, by, bz, MOD_TOP_BOTTOM);
 
         // this is done instead of an if statement for performance reasons
-        match &= (tops_and_bottoms[i].rotation == texture);
+        match &= (d_topsAndBottoms[i].rotation == texture);
         if (!match)
             break;
     }
@@ -100,13 +103,13 @@ __global__ void matchFormationKernel(int x_min, int x_max, int y_min, int y_max,
 
     for (int i = 0; i < side_size; i++)
     {
-        int cx = x + sides[i].x;
-        int cy = y + sides[i].y;
-        int cz = z + sides[i].z;
+        int cx = x + d_sides[i].x;
+        int cy = y + d_sides[i].y;
+        int cz = z + d_sides[i].z;
 
         int texture = (version == MODERN_VERSION) ? getTextureModern(cx, cy, cz, MOD_SIDE) : getTextureLegacy(cx, cy, cz, MOD_SIDE);
 
-        match &= (sides[i].rotation == texture);
+        match &= (d_sides[i].rotation == texture);
 
         if (!match)
             break;
@@ -220,14 +223,8 @@ int main(int argc, char *argv[])
         }
     }
 
-    BlockInfo *d_topsAndBottoms, *d_sides;
-
-    cudaMallocManaged(&d_topsAndBottoms, topsAndBottoms.size() * sizeof(BlockInfo));
-    cudaMallocManaged(&d_sides, sides.size() * sizeof(BlockInfo));
-
-    // FIXME: is this needed or do I cudaMemcpy?
-    std::memcpy(d_topsAndBottoms, topsAndBottoms.data(), topsAndBottoms.size() * sizeof(BlockInfo));
-    std::memcpy(d_sides, sides.data(), sides.size() * sizeof(BlockInfo));
+    cudaMemcpyToSymbol(d_topsAndBottoms, topsAndBottoms.data(), topsAndBottoms.size() * sizeof(BlockInfo));
+    cudaMemcpyToSymbol(d_sides, sides.data(), sides.size() * sizeof(BlockInfo));
 
     // FIXME: this needs to be optimized for the specific hardware the program is running on
     dim3 threadsPerBlock(8, 2, 8);
@@ -237,7 +234,7 @@ int main(int argc, char *argv[])
         ((y_max - y_min) + threadsPerBlock.y - 1) / threadsPerBlock.y,
         ((z_max - z_min) + threadsPerBlock.z - 1) / threadsPerBlock.z);
 
-    matchFormationKernel<<<numBlocks, threadsPerBlock>>>(x_min, x_max, y_min, y_max, z_min, z_max, d_topsAndBottoms, topsAndBottoms.size(), d_sides, sides.size(), version);
+    matchFormationKernel<<<numBlocks, threadsPerBlock>>>(x_min, x_max, y_min, y_max, z_min, z_max, topsAndBottoms.size(), sides.size(), version);
     cudaDeviceSynchronize();
 
     cudaFree(d_topsAndBottoms);
