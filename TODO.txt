@@ -3,3 +3,4 @@ add additional rotation generations for other versions
 make nicer CLI interface
 optimize cuda
 make code more modular
+rename rotation generation functions
