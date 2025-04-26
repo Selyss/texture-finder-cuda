@@ -131,10 +131,17 @@ std::vector<BlockInfo> parseFormationFile(const std::string &filename)
         std::istringstream iss(line);
         BlockInfo info;
 
-        if (iss >> info.x >> info.y >> info.z >> info.rotation >> info.isSide)
+        if (!(iss >> info.x >> info.y >> info.z >> info.rotation >> info.isSide))
         {
-            formation.push_back(info);
+            std::cerr << "Invalid format in formation file: " << filename
+                      << std::endl;
+            continue;
         }
+        if (info.isSide)
+        {
+            info.rotation %= 2;
+        }
+        formation.push_back(info);
     }
     std::cout << formation.size() << " blocks read from formation file: " << filename << std::endl;
     return formation;
