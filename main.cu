@@ -238,7 +238,7 @@ int main(int argc, char *argv[])
 
     dim3 numBlocks(
         ((x_max - x_min) + threadsPerBlock.x - 1) / threadsPerBlock.x,
-        ((y_max - y_min) + threadsPerBlock.y - 1) / threadsPerBlock.y,
+        ((y_max - y_min) + threadsPerBlock.y) / threadsPerBlock.y,
         ((z_max - z_min) + threadsPerBlock.z - 1) / threadsPerBlock.z);
 
     matchFormationKernel<<<numBlocks, threadsPerBlock>>>(x_min, x_max, y_min, y_max, z_min, z_max, topsAndBottoms.size(), sides.size(), version);
