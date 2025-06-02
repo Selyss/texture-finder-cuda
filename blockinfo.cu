@@ -1,4 +1,3 @@
-#pragma once
 #include "blockinfo.cuh"
 
 // define constant arrays
