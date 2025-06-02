@@ -11,5 +11,3 @@
 .vscode
 *.obj
 !TODO.txt
-
-Makefile
