@@ -47,5 +47,6 @@ __global__ void matchFormationKernel(int x_min, int x_max, int y_min, int y_max,
 
     if (match)
     {
+        printf("Match found at [%d, %d, %d]\n", x, y, z);
     }
 }
