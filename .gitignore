@@ -11,3 +11,4 @@
 .vscode
 *.obj
 !TODO.txt
+data
