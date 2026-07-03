@@ -11,4 +11,7 @@
 .vscode
 *.obj
 !TODO.txt
+!test/fixtures/*.txt
+test/test_runner
 data
+build/
