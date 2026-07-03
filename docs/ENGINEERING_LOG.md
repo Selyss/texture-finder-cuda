@@ -100,3 +100,44 @@ scheme (which needs ~18 evals/position equivalent for this formation shape).
 
 All rounds re-validated: full e2e (incl. GPU-vs-CPU dense differentials) and
 the 29M-value oracle diff pass on the final configuration.
+
+## Adversarial review pass (2026-07-03, close-out)
+
+An independent fresh-eyes review of the final tree (which fuzzed a host
+replica of the kernel's enumeration over 415 shape configurations — clean,
+exact-once visitation confirmed, matching the e2e differentials) surfaced
+one major and a set of minor defects, all fixed and re-validated:
+
+- **Major:** the device match counter was 32-bit; a dense weak-formation
+  search (legal arguments, ~2 s runtime) can exceed 2^32 matches, wrapping
+  the counter — silently wrong counts, a false "not truncated" state, and
+  buffer overwrites. Now `unsigned long long` end-to-end; the CLI prints the
+  true total and a "only the first N of M listed" warning; a new e2e case
+  locks the behavior (GPU total vs CPU ground truth over a >1M-match
+  volume: 1,088,572 == 1,088,572).
+- Parser: trailing tokens on a line now rejected (previously a second block
+  pasted on the same line was silently dropped); block offsets bounded
+  (|x|,|z| ≤ 1e6, |y| ≤ 4096 — an absolute coordinate pasted as an offset
+  used to be accepted and could overflow kernel math); contradictory
+  duplicate entries rejected, including top-vs-side parity conflicts
+  (side must equal top % 2), while consistent top+side pairs for the same
+  block remain legal.
+- runSearch API robustness: two-step u64 overflow guard for the volume
+  check (ny*nz could overflow the guard itself), chunk-count math immune
+  to u64 wrap at razor-edge volumes; weak-formation warning prints the
+  double directly (the old cast was UB past 2^63).
+- Compile-time asserts: chunk size > 0 (livelock guard), block threads a
+  multiple of 32 (full-mask intrinsics), formation fits the 48 KB default
+  dynamic-shared limit.
+- oracle_diff now fails on truncated/malformed dump files instead of
+  passing on partial coverage (eof + expected line counts enforced).
+- bench.sh labels corrected after the chunk-default flip (the sweep now has
+  a real c256 datapoint and no mislabeled duplicate); Makefile windows
+  target creates build/ and documents NVCC=; doctest.h added to test deps;
+  parser-test temp files cleaned up.
+- Docs: oracle comparison count stated consistently as 29,178,112 values;
+  corner-test claim softened to the two corners actually tested.
+
+Post-fix validation: `make test` 11 cases / 99,975 assertions, full e2e
+(29 checks incl. the new truncation case), oracle diff 0/29,178,112,
+kernel time unchanged (0.815-0.825 s).

@@ -30,10 +30,9 @@ run_config() { # <label> <defines...>
 }
 
 echo "config modern_best_of_3 legacy_single"
-run_config "t256_c256"   # defaults
-run_config "t128_c256"   -DTF_BLOCK_THREADS=128
-run_config "t512_c256"   -DTF_BLOCK_THREADS=512
-run_config "t256_c64"    -DTF_CHUNK_PER_LANE=64
-run_config "t256_c1024"  -DTF_CHUNK_PER_LANE=1024
-run_config "t128_c1024"  -DTF_BLOCK_THREADS=128 -DTF_CHUNK_PER_LANE=1024
+run_config "t256_c1024"  # defaults
+run_config "t128_c1024"  -DTF_BLOCK_THREADS=128
+run_config "t512_c1024"  -DTF_BLOCK_THREADS=512
+run_config "t256_c256"   -DTF_CHUNK_PER_LANE=256
+run_config "t256_c4096"  -DTF_CHUNK_PER_LANE=4096
 rm -f build/bench_*

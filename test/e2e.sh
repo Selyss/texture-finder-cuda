@@ -41,7 +41,8 @@ check "fixture formation_a" "Match found at [-108723, -54, -69736]" "$out"
 out=$($BIN -108723 -108723 -54 -54 -69736 -69736 0 test/fixtures/formation_a.txt 0)
 check "fixture single cell" "Match found at [-108723, -54, -69736]" "$out"
 
-# 3. Fixture with the origin exactly at each corner of the search box.
+# 3. Fixture with the origin exactly at the all-min / all-max corners of the
+#    search box.
 out=$($BIN -108723 -108000 -54 -40 -69736 -69000 0 test/fixtures/formation_a.txt 0)
 check "fixture at min corner" "Match found at [-108723, -54, -69736]" "$out"
 out=$($BIN -109000 -108723 -64 -54 -70000 -69736 0 test/fixtures/formation_a.txt 0)
@@ -97,7 +98,22 @@ $GEN 0 1 7777 30 -4444 24 40 99 > "$TMP/narrow.txt"
 diff_case "narrow x window (nx=3)" 7776 7778 14 46 -4460 -4428 0 "$TMP/narrow.txt" 1
 diff_case "single row (nx=1,nz=1)" 7777 7777 14 46 -4444 -4444 0 "$TMP/narrow.txt" 1
 
-# 6. Input validation must fail loudly, not run garbage.
+# 6. Truncation path: a search with more matches than the 1M result buffer
+#    must report the TRUE total (64-bit counter) and warn, not silently give
+#    a wrapped/partial count. CPU count is ground truth.
+echo "0 0 0 1 0" > "$TMP/tr.txt"
+gout=$($BIN 0 164 0 159 0 164 0 "$TMP/tr.txt" 0)
+ctotal=$($CPU 0 164 0 159 0 164 0 "$TMP/tr.txt" 0 | tail -1 | awk '{print $1}')
+gtotal=$(awk '/^[0-9]+ matches$/{print $1}' <<<"$gout")
+glisted=$(grep -c "^Match found" <<<"$gout" || true)
+if [ "$gtotal" == "$ctotal" ] && grep -q "only the first" <<<"$gout" && [ "$glisted" -eq 1048576 ]; then
+    echo "PASS: truncation reports true total ($gtotal matches, $glisted listed)"
+else
+    echo "FAIL: truncation — GPU total=$gtotal CPU total=$ctotal listed=$glisted"
+    fails=$((fails + 1))
+fi
+
+# 7. Input validation must fail loudly, not run garbage.
 if $BIN 0 100 0 10 0 100 0 <(echo "1 2 3 9 0") 0 >"$TMP/bad.out" 2>&1; then
     echo "FAIL: invalid rotation accepted"; fails=$((fails + 1))
 else

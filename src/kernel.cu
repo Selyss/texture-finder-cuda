@@ -34,6 +34,9 @@ constexpr unsigned int MAX_MATCHES = 1u << 20;
 
 constexpr int WARP = 32;
 
+static_assert(TF_CHUNK_PER_LANE > 0, "zero chunk size would livelock the chunk cursor");
+static_assert(TF_BLOCK_THREADS % WARP == 0, "partial warps break the full-mask warp intrinsics");
+
 // One formation block with its hash terms precomputed: the position hash's
 // x and z multiplies distribute over the block offset under wrapping (see
 // coordRandomFromParts), so per evaluation the kernel only adds these to the
@@ -51,6 +54,10 @@ struct DevBlock
 
 __constant__ DevBlock d_blocks[2 * MAX_FORMATION_BLOCKS];
 
+// A maximum-size formation must fit the default dynamic shared memory limit.
+static_assert(2 * MAX_FORMATION_BLOCKS * sizeof(DevBlock) <= 48 * 1024,
+              "formation no longer fits default dynamic shared memory");
+
 // Warp-compacted search. The naive one-thread-per-position kernel wastes ~2/3
 // of the issue slots: with a 1-in-4 pass rate per check, a warp's slowest lane
 // dictates ~4.3 evaluations per batch while the average position needs ~1.33.
@@ -64,7 +71,7 @@ template <bool MODERN>
 __global__ void __launch_bounds__(TF_BLOCK_THREADS)
     matchFormationKernel(SearchBounds b, int totalBlocks, unsigned long long total,
                          unsigned long long *chunkCursor,
-                         MatchResult *out, unsigned int *outCount)
+                         MatchResult *out, unsigned long long *outCount)
 {
     // Formation goes to shared memory: compacted lanes sit at different block
     // indices, and divergent-address reads serialize in constant memory but
@@ -151,7 +158,10 @@ __global__ void __launch_bounds__(TF_BLOCK_THREADS)
             }
             else if (++bi == totalBlocks)
             {
-                const unsigned int idx = atomicAdd(outCount, 1u);
+                // 64-bit: a dense weak-formation search can exceed 2^32
+                // matches, which would wrap a 32-bit counter and restart
+                // idx at 0, overwriting the buffer.
+                const unsigned long long idx = atomicAdd(outCount, 1ull);
                 if (idx < MAX_MATCHES)
                     out[idx] = {x, y, z};
                 bi = -1;
@@ -165,7 +175,8 @@ std::vector<MatchResult> runSearch(const SearchBounds &bounds,
                                    const std::vector<BlockInfo> &sides,
                                    int version,
                                    float *kernelMs,
-                                   bool *truncated)
+                                   bool *truncated,
+                                   unsigned long long *totalMatches)
 {
     if (topsAndBottoms.size() > MAX_FORMATION_BLOCKS || sides.size() > MAX_FORMATION_BLOCKS)
     {
@@ -193,7 +204,9 @@ std::vector<MatchResult> runSearch(const SearchBounds &bounds,
     const unsigned long long nx = (unsigned long long)((long long)bounds.x_max - bounds.x_min + 1);
     const unsigned long long ny = (unsigned long long)((long long)bounds.y_max - bounds.y_min + 1);
     const unsigned long long nz = (unsigned long long)((long long)bounds.z_max - bounds.z_min + 1);
-    if (ny != 0 && nz != 0 && nx > (~0ull) / (ny * nz))
+    // Two-step overflow guard: ny*nz itself must not overflow before it is
+    // used as a divisor (nx/ny/nz are each >= 1 by construction).
+    if (ny > (~0ull) / nz || nx > (~0ull) / (ny * nz))
     {
         std::fprintf(stderr, "Search volume too large\n");
         std::exit(1);
@@ -201,12 +214,12 @@ std::vector<MatchResult> runSearch(const SearchBounds &bounds,
     const unsigned long long total = nx * ny * nz;
 
     MatchResult *d_out = nullptr;
-    unsigned int *d_count = nullptr;
+    unsigned long long *d_count = nullptr;
     unsigned long long *d_cursor = nullptr;
     CUDA_CHECK(cudaMalloc(&d_out, MAX_MATCHES * sizeof(MatchResult)));
-    CUDA_CHECK(cudaMalloc(&d_count, sizeof(unsigned int)));
+    CUDA_CHECK(cudaMalloc(&d_count, sizeof(unsigned long long)));
     CUDA_CHECK(cudaMalloc(&d_cursor, sizeof(unsigned long long)));
-    CUDA_CHECK(cudaMemset(d_count, 0, sizeof(unsigned int)));
+    CUDA_CHECK(cudaMemset(d_count, 0, sizeof(unsigned long long)));
     CUDA_CHECK(cudaMemset(d_cursor, 0, sizeof(unsigned long long)));
 
     // Persistent-thread launch sized to fill the device exactly once.
@@ -223,7 +236,7 @@ std::vector<MatchResult> runSearch(const SearchBounds &bounds,
         CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
             &blocksPerSM, matchFormationKernel<false>, TF_BLOCK_THREADS, sharedBytes));
     const unsigned long long chunkSize = (unsigned long long)WARP * TF_CHUNK_PER_LANE;
-    const unsigned long long chunksNeeded = (total + chunkSize - 1) / chunkSize;
+    const unsigned long long chunksNeeded = total / chunkSize + (total % chunkSize != 0);
     const unsigned long long warpsNeeded = chunksNeeded; // one chunk in flight per warp
     unsigned long long grid = (unsigned long long)props.multiProcessorCount * (blocksPerSM > 0 ? blocksPerSM : 1);
     const unsigned long long gridForWork = (warpsNeeded * WARP + TF_BLOCK_THREADS - 1) / TF_BLOCK_THREADS;
@@ -257,12 +270,14 @@ std::vector<MatchResult> runSearch(const SearchBounds &bounds,
     CUDA_CHECK(cudaEventDestroy(evStart));
     CUDA_CHECK(cudaEventDestroy(evStop));
 
-    unsigned int count = 0;
-    CUDA_CHECK(cudaMemcpy(&count, d_count, sizeof(unsigned int), cudaMemcpyDeviceToHost));
+    unsigned long long count = 0;
+    CUDA_CHECK(cudaMemcpy(&count, d_count, sizeof(unsigned long long), cudaMemcpyDeviceToHost));
 
-    const unsigned int stored = std::min(count, MAX_MATCHES);
+    const unsigned int stored = (unsigned int)std::min(count, (unsigned long long)MAX_MATCHES);
     if (truncated)
         *truncated = count > MAX_MATCHES;
+    if (totalMatches)
+        *totalMatches = count;
 
     std::vector<MatchResult> matches(stored);
     if (stored > 0)

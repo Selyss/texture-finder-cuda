@@ -24,12 +24,15 @@ build/main: $(SOURCES) include/*.cuh
 	@mkdir -p build
 	$(NVCC) $(NVCCFLAGS) $(SOURCES) -o $@
 
+# On Windows run e.g. `make windows NVCC=nvcc` (the Unix-path default does
+# not apply there); the mkdir line tolerates the directory already existing.
 windows: $(SOURCES) include/*.cuh
+	-mkdir build
 	$(NVCC) -ccbin $(CCBIN) $(NVCCFLAGS) $(SOURCES) -o build/main.exe
 
 # Host-only: compiles the exact headers the kernel uses, plus the parser
 # (compiled as C++), against the doctest suite.
-build/test: test/test.cpp src/parser.cu include/*.cuh
+build/test: test/test.cpp test/doctest.h src/parser.cu include/*.cuh
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -Itest test/test.cpp -x c++ src/parser.cu -o $@
 

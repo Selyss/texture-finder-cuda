@@ -120,7 +120,7 @@ int main(int argc, char *argv[])
                                   std::pow(0.25, (double)topsAndBottoms.size()) *
                                   std::pow(0.5, (double)sides.size());
     if (expectedRandom > 100.0)
-        std::cout << "Warning: formation is weak for this volume; ~" << (long long)expectedRandom
+        std::cout << "Warning: formation is weak for this volume; ~" << expectedRandom
                   << " coincidental matches expected. Add more blocks or shrink the search area."
                   << std::endl;
 
@@ -132,6 +132,7 @@ int main(int argc, char *argv[])
     std::vector<Found> found;
     float totalKernelMs = 0.f;
     bool anyTruncated = false;
+    unsigned long long totalMatches = 0;
 
     for (int dir : directions)
     {
@@ -146,9 +147,12 @@ int main(int argc, char *argv[])
 
         float kernelMs = 0.f;
         bool truncated = false;
-        std::vector<MatchResult> matches = runSearch(bounds, tops, sids, version, &kernelMs, &truncated);
+        unsigned long long dirTotal = 0;
+        std::vector<MatchResult> matches =
+            runSearch(bounds, tops, sids, version, &kernelMs, &truncated, &dirTotal);
         totalKernelMs += kernelMs;
         anyTruncated |= truncated;
+        totalMatches += dirTotal;
         for (const auto &m : matches)
             found.push_back({m, dir});
     }
@@ -170,10 +174,10 @@ int main(int argc, char *argv[])
     if (found.empty())
         std::cout << "No matches found." << std::endl;
     else
-        std::cout << found.size() << (found.size() == 1 ? " match" : " matches") << std::endl;
+        std::cout << totalMatches << (totalMatches == 1 ? " match" : " matches") << std::endl;
     if (anyTruncated)
-        std::cout << "Warning: too many matches, results were truncated; shrink the search area."
-                  << std::endl;
+        std::cout << "Warning: only the first " << found.size() << " of " << totalMatches
+                  << " matches are listed; shrink the search area." << std::endl;
 
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> elapsed = end - start;

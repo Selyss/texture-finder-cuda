@@ -159,10 +159,18 @@ namespace
 std::string writeTempFile(const std::string &content)
 {
     static int counter = 0;
-    std::string path = "build/parser_test_" + std::to_string(counter++) + ".txt";
+    std::string path = "parser_test_" + std::to_string(counter++) + ".txt";
     std::ofstream out(path);
     out << content;
     return path;
+}
+
+// Writes, checks the parser throws, and cleans up the file.
+void expectParseError(const std::string &content)
+{
+    std::string path = writeTempFile(content);
+    CHECK_THROWS_AS(parseFormationFile(path), std::runtime_error);
+    std::remove(path.c_str());
 }
 } // namespace
 
@@ -183,11 +191,31 @@ TEST_CASE("parser - valid file with comments and blank lines")
 TEST_CASE("parser - rejects bad input loudly instead of skipping it")
 {
     CHECK_THROWS_AS(parseFormationFile("does_not_exist_12345.txt"), std::runtime_error);
-    CHECK_THROWS_AS(parseFormationFile(writeTempFile("")), std::runtime_error);
-    CHECK_THROWS_AS(parseFormationFile(writeTempFile("# only a comment\n")), std::runtime_error);
-    CHECK_THROWS_AS(parseFormationFile(writeTempFile("1 2 3 4 0\n")), std::runtime_error);  // rotation > 3
-    CHECK_THROWS_AS(parseFormationFile(writeTempFile("1 2 3 -1 0\n")), std::runtime_error); // rotation < 0
-    CHECK_THROWS_AS(parseFormationFile(writeTempFile("1 2 3 1 2\n")), std::runtime_error);  // isSide not 0/1
-    CHECK_THROWS_AS(parseFormationFile(writeTempFile("1 2 3\n")), std::runtime_error);      // missing fields
-    CHECK_THROWS_AS(parseFormationFile(writeTempFile("a b c d e\n")), std::runtime_error);
+    expectParseError("");
+    expectParseError("# only a comment\n");
+    expectParseError("1 2 3 4 0\n");                 // rotation > 3
+    expectParseError("1 2 3 -1 0\n");                // rotation < 0
+    expectParseError("1 2 3 1 2\n");                 // isSide not 0/1
+    expectParseError("1 2 3\n");                     // missing fields
+    expectParseError("a b c d e\n");
+    expectParseError("1 2 3 2 0 4 5 6 1 0\n");       // two blocks on one line
+    expectParseError("1 2 3 2 0 oops\n");            // trailing garbage
+    expectParseError("2147483647 0 0 0 0\n");        // absolute coordinate pasted as offset
+    expectParseError("0 9999 0 0 0\n");              // y offset out of range
+    expectParseError("1 2 3 0 0\n1 2 3 1 0\n");      // same block, contradictory tops
+    expectParseError("1 2 3 2 0\n1 2 3 1 1\n");      // top=2 but side=1 (parity mismatch)
+}
+
+TEST_CASE("parser - consistent duplicates and top+side pairs are accepted")
+{
+    // Exact duplicate collapses to one block.
+    std::string path = writeTempFile("1 2 3 2 0\n1 2 3 2 0\n");
+    CHECK(parseFormationFile(path).size() == 1);
+    std::remove(path.c_str());
+
+    // Same block observed as top (rot 2) and side (parity 0): consistent.
+    path = writeTempFile("1 2 3 2 0\n1 2 3 0 1\n# trailing comment ok\n4 5 6 1 0 # inline comment\n");
+    auto f = parseFormationFile(path);
+    CHECK(f.size() == 3);
+    std::remove(path.c_str());
 }

@@ -82,12 +82,13 @@ the searcher tries all four orientations and reports which one matched.
    is an independently confirmed formation
    ([expected result](../test/fixtures/formation_a.expected.md)); the unit
    tests check it against the RNG directly, and the e2e suite requires the
-   GPU search to find it — including with the origin on every corner of the
-   search box, and as a single-cell search (regressions for old
-   coverage-gap bugs).
+   GPU search to find it — including with the origin on the all-min and
+   all-max corners of the search box, and as a single-cell search
+   (regressions for old coverage-gap bugs).
 3. **Oracle differential** (`make tools`, then
-   `build/oracle_diff <dumps_dir>`): compares ~26M values (25.2M grid bytes
-   near origin, 3k world-border extremes, 1M random coordinates) against
+   `build/oracle_diff <dumps_dir>`): compares 29,178,112 values (25.2M grid
+   bytes near origin, 3k world-border extremes, 1M random coordinates,
+   each for both versions and both face kinds) against
    dumps produced by the *actual Java reference code* running on a JVM
    (`/root/oracle/` on the GPU box; regenerate with `regen.sh`). Any
    divergence from Java semantics fails loudly.

@@ -70,7 +70,7 @@ bool diffGrid(const std::string &path, const char *what, bool modern, int mod)
     return true;
 }
 
-bool diffText(const std::string &path)
+bool diffText(const std::string &path, long long expectedLines)
 {
     std::ifstream f(path);
     if (!f)
@@ -89,7 +89,21 @@ bool diffText(const std::string &path)
         lines++;
     }
     std::printf("%s: %lld lines\n", path.c_str(), lines);
-    return lines > 0;
+    // A malformed line stops the >> loop early; partial coverage must not
+    // pass as success.
+    if (!f.eof())
+    {
+        std::fprintf(stderr, "%s: stopped at a malformed line (after %lld lines)\n",
+                      path.c_str(), lines);
+        return false;
+    }
+    if (lines != expectedLines)
+    {
+        std::fprintf(stderr, "%s: expected %lld lines, got %lld\n", path.c_str(),
+                      expectedLines, lines);
+        return false;
+    }
+    return true;
 }
 
 } // namespace
@@ -108,8 +122,8 @@ int main(int argc, char *argv[])
     ok &= diffGrid(dir + "/legacy_side.bin", "legacy_side", false, 2);
     ok &= diffGrid(dir + "/modern_top.bin", "modern_top", true, 4);
     ok &= diffGrid(dir + "/modern_side.bin", "modern_side", true, 2);
-    ok &= diffText(dir + "/extremes.txt");
-    ok &= diffText(dir + "/random.txt");
+    ok &= diffText(dir + "/extremes.txt", 3072);
+    ok &= diffText(dir + "/random.txt", 1000000);
 
     std::printf("Compared %lld values, %lld mismatches\n", g_compared, g_mismatches);
     if (!ok || g_mismatches > 0)
