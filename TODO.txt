@@ -1,4 +1,6 @@
-set up tests so the functions do not need to be copied from the implementation
-add additional rotation generations for other versions
-make nicer CLI interface
-rename rotation generation functions
+add rotation generators for other versions: Vanilla12Textures (<=1.12.2),
+    SodiumTextures (1.16-1.18.2), Sodium19Textures (1.19-1.19.3) - formulas
+    are in the reference repo; docs/SEMANTICS.md describes how to add and
+    verify one (oracle dumps + version flag)
+multi-GPU support (split the chunk cursor range per device)
+progress output for very large searches
