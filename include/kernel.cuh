@@ -1,4 +1,28 @@
 #pragma once
+#include <vector>
 #include "blockinfo.cuh"
 
-__global__ void matchFormationKernel(int x_min, int x_max, int y_min, int y_max, int z_min, int z_max, int tb_size, int side_size, int version);
+struct SearchBounds
+{
+    int x_min, x_max;
+    int y_min, y_max;
+    int z_min, z_max;
+};
+
+struct MatchResult
+{
+    int x, y, z;
+};
+
+// Searches the (inclusive) bounds for origins where every block of the
+// formation matches the texture rotation the game would generate.
+// On return, *kernelMs holds the kernel execution time and *truncated is set
+// if there were more matches than the result buffer holds (the returned
+// vector then contains the first bufferful; tighten the search in that case).
+// Terminates the process with an error message on any CUDA failure.
+std::vector<MatchResult> runSearch(const SearchBounds &bounds,
+                                   const std::vector<BlockInfo> &topsAndBottoms,
+                                   const std::vector<BlockInfo> &sides,
+                                   int version,
+                                   float *kernelMs = nullptr,
+                                   bool *truncated = nullptr);

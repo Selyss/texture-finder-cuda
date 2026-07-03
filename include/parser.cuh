@@ -1,7 +1,9 @@
 #pragma once
-#include <vector>
 #include <string>
+#include <vector>
 #include "blockinfo.cuh"
 
-// TODO: make this .h and parser.cu should be .cpp, its host code and doesnt use cuda
+// Parses a formation file ("x y z rotation isSide" per line; '#' comments and
+// blank lines allowed). Throws std::runtime_error with file:line context on
+// any invalid input. Host-only code.
 std::vector<BlockInfo> parseFormationFile(const std::string &filename);
