@@ -6,7 +6,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-make -s build/main build/gen_formation
+make -s build/main build/gen_formation build/cpu_search
 
 BIN=build/main
 GEN=build/gen_formation
@@ -68,7 +68,36 @@ for version in 0 1; do
     done
 done
 
-# 5. Input validation must fail loudly, not run garbage.
+# 5. GPU vs CPU differential: on small volumes the GPU must produce exactly
+#    the same match set as the independent CPU implementation — including
+#    dense many-match cases that exercise every position (any enumeration bug
+#    in the warp-compacted kernel shows up here deterministically).
+CPU=build/cpu_search
+diff_case() { # <label> <args...>
+    local label=$1; shift
+    local g c
+    g=$("$BIN" "$@" 2>/dev/null | grep "^Match found" | sort) || true
+    c=$("$CPU" "$@" 2>/dev/null | grep "^Match found" | sort) || true
+    if [ "$g" == "$c" ] && [ -n "$c" ]; then
+        echo "PASS: differential $label ($(wc -l <<<"$c" | tr -d ' ') matches)"
+    else
+        echo "FAIL: differential $label"
+        diff <(echo "$g") <(echo "$c") | head -20 | sed 's/^/    /'
+        fails=$((fails + 1))
+    fi
+}
+
+echo "1 -1 2 2 0" > "$TMP/one.txt"           # single top block: ~25% of all positions match
+diff_case "dense 1-block v0" 100 139 10 29 -220 -181 0 "$TMP/one.txt" 0
+diff_case "dense 1-block v1" 100 139 10 29 -220 -181 1 "$TMP/one.txt" 0
+printf '0 0 0 1 0\n2 0 1 1 1\n1 1 2 3 0\n' > "$TMP/three.txt"
+diff_case "weak 3-block v0 all-mode" -3010 -2981 40 59 512 541 0 "$TMP/three.txt" all
+diff_case "weak 3-block v1 dir2" -3010 -2981 40 59 512 541 1 "$TMP/three.txt" 2
+$GEN 0 1 7777 30 -4444 24 40 99 > "$TMP/narrow.txt"
+diff_case "narrow x window (nx=3)" 7776 7778 14 46 -4460 -4428 0 "$TMP/narrow.txt" 1
+diff_case "single row (nx=1,nz=1)" 7777 7777 14 46 -4444 -4444 0 "$TMP/narrow.txt" 1
+
+# 6. Input validation must fail loudly, not run garbage.
 if $BIN 0 100 0 10 0 100 0 <(echo "1 2 3 9 0") 0 >"$TMP/bad.out" 2>&1; then
     echo "FAIL: invalid rotation accepted"; fails=$((fails + 1))
 else

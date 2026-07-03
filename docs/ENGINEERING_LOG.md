@@ -78,3 +78,25 @@ Next experiments queued: formation in dynamic shared memory (kills the
 constant-serialization cost; sized to the formation so occupancy is
 unaffected), register/occupancy audit via `-Xptxas -v`, and if
 latency-bound: 2 interleaved candidates per lane for ILP.
+
+## Optimization round 2 (2026-07-03, later)
+
+| Experiment | Kernel (modern) | Verdict |
+|---|---|---|
+| Formation in dynamic shared memory instead of `__constant__` | 1.168 → 1.158 s | ~1%. Constant-serialization was NOT the story. Kept anyway (strictly better, costs nothing: dynamic size → no occupancy hit). |
+| Register audit (`-Xptxas -v`) | 32 regs, full occupancy | Not latency/occupancy-starved. `ncu` profiling unavailable on the box (container blocks GPU perf counters, `ERR_NVGPUCTRPERM`), so bound analysis stayed model-based: ~44 issue slots/eval measured vs ~40 modeled → issue-rate bound. |
+| Precompute per-block hash terms + ballot-free stripe loop | 1.158 → **0.855 s** | **~26%.** Two changes landed together: (a) the hash's x/z multiplies distribute over block offsets under wrapping, so `bx*3129871` and `bz*116129781` are precomputed per block on the host and the per-eval multiplies become adds (texture.cuh refactored into a two-stage API — coordRandomFromParts + {legacy,modern}FromCoordRandom — so kernel, tests, and tools still share one implementation); (b) the per-iteration `__all_sync` ballot/refill bookkeeping replaced by an outer uniform chunk-grab loop + inner per-lane stripe loop with zero warp coordination. |
+| Chunk size re-sweep | 1024/lane: **0.823 s** vs 256: 0.856, 64: 0.944 | Default set to `TF_CHUNK_PER_LANE=1024`. Block size 128/256/512 within noise; 256 kept. |
+
+**Final: kernel 0.826 s, wall 1.04 s on the reference workload — 4.45×
+end-to-end vs the 4.63 s baseline** (legacy version essentially identical:
+0.822 s). Estimated remaining headroom at this algorithm: ≤10% (the kernel
+issues ~44 slots per evaluation vs ~35 of irreducible hash math + compare;
+further cuts mean hand-scheduling PTX or truncated 48-bit multiplies —
+complexity not worth it). Structural alternatives (shared-memory tiling of
+texture values) were analyzed and rejected: early-exit makes the naive
+evaluation count (~1.33/position) far cheaper than any precompute-everything
+scheme (which needs ~18 evals/position equivalent for this formation shape).
+
+All rounds re-validated: full e2e (incl. GPU-vs-CPU dense differentials) and
+the 29M-value oracle diff pass on the final configuration.

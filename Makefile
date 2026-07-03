@@ -36,7 +36,7 @@ build/test: test/test.cpp src/parser.cu include/*.cuh
 test: build/test
 	./build/test
 
-tools: build/gen_formation build/oracle_diff
+tools: build/gen_formation build/oracle_diff build/cpu_search
 
 build/gen_formation: test/gen_formation.cpp include/*.cuh
 	@mkdir -p build
@@ -45,6 +45,10 @@ build/gen_formation: test/gen_formation.cpp include/*.cuh
 build/oracle_diff: test/oracle_diff.cpp include/*.cuh
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) test/oracle_diff.cpp -o $@
+
+build/cpu_search: test/cpu_search.cpp src/parser.cu include/*.cuh
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) test/cpu_search.cpp -x c++ src/parser.cu -o $@
 
 clean:
 	rm -rf build
