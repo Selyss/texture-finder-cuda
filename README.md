@@ -10,6 +10,30 @@
   the reference Java tool ([benchmarks](docs/BENCHMARKS.md))
 - *Does not require the world seed*
 
+## Features
+- **Finds coordinates from block texture rotations alone**: recreate a
+  formation from a screenshot, feed in the rotation numbers, get the world
+  position back.
+- **All five rotation modes**: vanilla <=1.12.2 / 1.13–1.21.1 / 1.21.2+ and
+  the two legacy Sodium renderers — every mode verified bit-for-bit against
+  the reference Java implementation (~73M-value differential in CI).
+- **Unknown orientation? Pass `all`**: searches all four facings in one run
+  and reports which one matched, so a wrong direction guess can never lose
+  a find.
+- **Built for world-scale scans**: live progress + ETA, matches stream as
+  they are found, and `--checkpoint` makes multi-hour searches resumable
+  after a crash or reboot. A 100k × 100k area takes ~0.06 s per y-layer on
+  an RTX 3090; a full ±30M world is ~6 h per layer.
+- **Tells you when your formation is too weak**: warns how many coincidental
+  matches to expect in the searched volume and exactly how many more blocks
+  you need for a unique result.
+- **Runs anywhere**: CUDA, Metal, or plain multithreaded C++ — identical
+  results, one `make` flag apart. Even the CPU backend beats the original
+  Java tool.
+- **Loud failure over silent lies**: strict input validation with file:line
+  errors, exact match totals even past the result-buffer cap, and full
+  GPU error checking.
+
 ## Building
 `make` picks a backend automatically: CUDA if `nvcc` is present (on PATH or
 at `/usr/local/cuda`), otherwise Metal on macOS, otherwise the portable CPU
@@ -114,11 +138,23 @@ Large searches show a live progress line with ETA on stderr and print
 matches as they are found. If the formation is too weak to give a unique
 result in the requested volume, the program says how many blocks to add.
 
-Example:
+Example — search a 20k × 20k area, all orientations, 1.21.2+ rules:
 
 ```
-./build/main -10000 10000 -64 100 -10000 10000 0 formation.txt all
+$ ./build/main -10000 10000 -64 100 -10000 10000 0 formation.txt all
+24 blocks read from formation file: formation.txt
+Backend: CUDA
+Version: 1.21.2+
+Facing: trying all directions
+Match found at [4851, 63, -7204] facing West
+1 match
+Kernel time: 0.31 seconds
+Search completed in 0.52 seconds
 ```
+
+For long searches, add `--checkpoint search.state` — progress and ETA show
+on stderr, matches print the moment they are found, and rerunning the same
+command after an interruption resumes where it stopped.
 
 ## Version Table
 Depending on the version of the client, the mode will need to be changed.
