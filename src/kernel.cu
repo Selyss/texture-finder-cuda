@@ -99,51 +99,69 @@ __global__ void __launch_bounds__(TF_BLOCK_THREADS)
         if (base >= total)
             return; // uniform exit
 
-        int pull = 0;
+        // Number of in-range pulls in this lane's stripe, computed once so
+        // the per-pull path needs no 64-bit index math or range compare:
+        // positions gLane, gLane+32, ..., gLane+(budget-1)*32 are < total.
+        const unsigned long long gLane = base + lane;
+        int budget = 0;
+        if (gLane < total)
+        {
+            const unsigned long long remaining = total - gLane;
+            const unsigned long long pulls = (remaining + WARP - 1) / WARP;
+            budget = (int)(pulls < TF_CHUNK_PER_LANE ? pulls : TF_CHUNK_PER_LANE);
+        }
+
         int x = 0, y = 0, z = 0;     // candidate origin (valid while bi >= 0)
         unsigned int hx = 0;         // x * 3129871 (mod 2^32)
         long long hz = 0;            // z * 116129781
         int bi = -1;                 // next block to check; -1 = no live candidate
+        bool first = true;
 
         // Each lane processes its stripe independently: the moment a
         // candidate fails, the lane pulls a fresh one, so lanes stay busy on
         // the highly selective first blocks instead of idling while a
         // warp-mate finishes a deep near-match.
-        while (bi >= 0 || pull < TF_CHUNK_PER_LANE)
+        while (bi >= 0 || budget > 0)
         {
             if (bi < 0)
             {
-                const unsigned long long g = base + (unsigned long long)pull * WARP + lane;
-                if (g >= total)
-                    break; // rest of the stripe is out of range too
-                pull++;
-                if (pull == 1)
+                budget--;
+                if (first)
                 {
                     // First pull of a chunk: full decompose (amortized away).
-                    unsigned long long r = g;
+                    first = false;
+                    unsigned long long r = gLane;
                     x = b.x_min + (int)(r % (unsigned long long)nx);
                     r /= (unsigned long long)nx;
                     z = b.z_min + (int)(r % (unsigned long long)nz);
                     r /= (unsigned long long)nz;
                     y = b.y_min + (int)r;
+                    hx = (unsigned int)x * 3129871u;
+                    hz = (long long)z * 116129781LL;
                 }
                 else
                 {
-                    // Consecutive pulls advance exactly WARP linear steps.
+                    // Consecutive pulls advance exactly WARP linear steps;
+                    // the x hash term advances by a compile-time constant
+                    // (wrapping add), so the common path multiplies nothing.
                     x += WARP;
-                    while (x > b.x_max)
+                    hx += (unsigned int)WARP * 3129871u;
+                    if (x > b.x_max)
                     {
-                        x -= (int)nx;
-                        z++;
-                        if (z > b.z_max)
+                        do
                         {
-                            z -= (int)nz;
-                            y++;
-                        }
+                            x -= (int)nx;
+                            z++;
+                            if (z > b.z_max)
+                            {
+                                z -= (int)nz;
+                                y++;
+                            }
+                        } while (x > b.x_max);
+                        hx = (unsigned int)x * 3129871u;
+                        hz = (long long)z * 116129781LL;
                     }
                 }
-                hx = (unsigned int)x * 3129871u;
-                hz = (long long)z * 116129781LL;
                 bi = 0;
             }
 

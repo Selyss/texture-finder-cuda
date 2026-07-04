@@ -74,8 +74,12 @@ TF_HOST_DEVICE inline int modernFromCoordRandom(int64_t coordRand, int mod)
     constexpr int64_t MASK = (1LL << 48) - 1;
     int64_t seed = coordRand ^ MULTIPLIER;
     seed = (int64_t)((uint64_t)seed * (uint64_t)MULTIPLIER + 11ull) & MASK;
-    int next = (int)(seed >> (48 - 31));
-    return (int)(((4LL * next) >> 31) % mod);
+    // seed is in [0, 2^48) after the mask, so `next` is non-negative and the
+    // Java tail is computed in unsigned form (identical values for all
+    // inputs; this lets the compiler fold the shift and constant mod instead
+    // of emitting signed-division fixups it can't prove away).
+    unsigned int next = (unsigned int)((uint64_t)seed >> (48 - 31));
+    return (int)(((4ull * next) >> 31) % (unsigned int)mod);
 }
 
 TF_HOST_DEVICE inline int getTextureModern(int32_t x, int32_t y, int32_t z, int mod)

@@ -141,3 +141,37 @@ one major and a set of minor defects, all fixed and re-validated:
 Post-fix validation: `make test` 11 cases / 99,975 assertions, full e2e
 (29 checks incl. the new truncation case), oracle diff 0/29,178,112,
 kernel time unchanged (0.815-0.825 s).
+
+## Optimization round 3 + box migration (2026-07-04)
+
+The original benchmark instance was recycled (fresh disk, new endpoint,
+EPYC 7763 instead of 7H12, same RTX 3090 model and same 27.2-core quota).
+Consequences handled:
+
+- The Java oracle harness and benchmark sources previously lived only on
+  the box. Now vendored: `test/oracle/Dump.java` + `test/oracle/regen.sh`
+  rebuild the oracle on any machine with a JDK, and `test/bench-java/`
+  holds the benchmark configuration of the reference tool. The locally
+  regenerated dumps were verified **byte-identical (SHA256)** to the
+  originals from the old box — the platform-independence claim held up
+  exactly when it was needed.
+- The previous best build was re-benchmarked on the new instance before
+  anything else: 0.821-0.824 s kernel vs 0.822-0.826 s on the old box —
+  within noise, so the benchmark table remains comparable across the swap.
+
+Round-3 changes (predicted 8-12% from the instruction model, measured
+**12.5%**: kernel 0.822 s → 0.719 s, wall ~0.94 s; legacy identical at
+0.720 s):
+
+| Change | Why it works |
+|---|---|
+| Modern tail in provably-unsigned form (`texture.cuh`) | `next` comes from a 48-bit-masked seed and is always non-negative, but the `(int)` cast hid that from the compiler, forcing signed `%`/shift fixup code on every evaluation. The unsigned form is value-identical for all inputs (re-proven: 29,178,112 oracle values, 0 mismatches) and folds to bare shifts/masks. |
+| Per-chunk pull budget + incremental refill (`kernel.cu`) | The old refill did 64-bit `g = base + pull*32 + lane`, a 64-bit `g < total` compare, and two hash-term multiplies per candidate. Now: the number of in-range pulls is computed once per chunk (one ceil-div), the linear index advances implicitly, and the x hash term advances by the compile-time constant `32*3129871` (wrapping add) — the multiplies survive only on the rare z-carry path. Also shifts work from the saturated multiply pipe to the underused ALU pipe. |
+
+Validated on the new box: all 29 e2e checks (including the dense
+GPU-vs-CPU exhaustive differentials that pin the enumeration), oracle diff
+clean, register count unchanged at full occupancy. BENCHMARKS.md row 7.
+
+Remaining single-GPU headroom at this algorithm is now genuinely small
+(~40 issue slots/eval vs ~35 irreducible); next meaningful steps are
+multi-GPU (split the chunk cursor) or newer silicon.

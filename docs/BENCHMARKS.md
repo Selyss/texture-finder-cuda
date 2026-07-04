@@ -18,12 +18,17 @@ measured with CUDA events).
 
 ## Machine
 
-- GPU: NVIDIA GeForce RTX 3090 (GA102, 82 SMs, 24 GB), driver 580.159.03, CUDA 12.8, `-O3 -arch=native`
+- GPU: NVIDIA GeForce RTX 3090 (GA102, 82 SMs, 24 GB), CUDA 12.8, `-O3 -arch=native`
 - CPU: 2 × AMD EPYC 7H12 (128 cores / 256 threads total), 1 TB RAM —
   **container cgroup CPU quota: 27.2 cores** (`cpu.max 2720000/100000`),
   which caps every CPU-side number below; CPU-seconds are reported so
   results can be projected onto unrestricted hardware
 - OS: Ubuntu 22.04, OpenJDK 17 for the Java runs
+- Rows 1-6: instance with driver 580.159.03. Row 7: a replacement instance,
+  same GPU model (driver 580.126.20, CPU EPYC 7763, same 27.2-core quota) —
+  row 6's build was re-measured there first and reproduced its numbers
+  within noise (0.821-0.824 s vs 0.822-0.826 s kernel), so rows are
+  comparable across the swap.
 
 ## Results
 
@@ -34,14 +39,15 @@ measured with CUDA events).
 | 3 | CUDA original (this repo, pre-overhaul) | dim3(8,2,8), printf output | 4.63 s | 41.6× | **correctness caveats**: silently skipped the last x/z column at these exact bounds, searched nothing for single-cell ranges, sides broken for direction ≠ 0 |
 | 4 | CUDA rewrite: grid-stride + result buffer | 256-thread blocks | 1.47 s (kernel 1.26 s) | 131× | first correct version; 3.15× vs #3 |
 | 5 | CUDA warp compaction | chunk 256/lane | 1.40 s (kernel 1.17 s) | 138× | |
-| 6 | CUDA precomputed hash terms + stripe loop | chunk 1024/lane | **1.04 s (kernel 0.83 s)** | **185×** | current default; 4.45× vs original CUDA (#3) |
+| 6 | CUDA precomputed hash terms + stripe loop | chunk 1024/lane | 1.04 s (kernel 0.83 s) | 185× | 4.45× vs original CUDA (#3) |
+| 7 | CUDA unsigned tail folds + incremental refill | chunk 1024/lane | **0.94 s (kernel 0.72 s)** | **205×** | current default; 4.9× vs original CUDA (#3); legacy version identical (0.720 s kernel) |
 
 Cross-device framing (since Java-on-CPU vs CUDA-on-GPU is the point of the
 project): using the Java run's own best throughput (1,562 EPYC-core-seconds
-for the workload) against the 0.83 s GPU kernel, it would take **~1,900
-EPYC 7H12 cores scaling perfectly** to match one RTX 3090 on this search.
+for the workload) against the 0.72 s GPU kernel, it would take **~2,200
+EPYC cores scaling perfectly** to match one RTX 3090 on this search.
 Projected onto the full unrestricted 128-core machine (ideal scaling,
-no quota), Java would finish in ~12 s — the single GPU is still ~12× faster
+no quota), Java would finish in ~12 s — the single GPU is still ~17× faster
 than the entire dual-socket server at its theoretical best.
 
 ## What each iteration did and why
@@ -109,8 +115,34 @@ value tiling, multi-pass filtering, ILP dual-candidates) in
 ## Reproducing
 
 - CUDA: `test/bench.sh` (sweeps the tuning knobs on the current source).
-- Java: `/root/javabench` on the benchmark box — reference sources with the
-  fixture formation and benchmark bounds substituted, search loops
-  untouched; `java -cp .:/root/oracle/harness/classes -Dbench.threads=N Main`.
+- Java: sources vendored in `test/bench-java/` (reference code with only the
+  fixture formation and benchmark bounds substituted; search loops
+  untouched). Compile together with `RotationInfo.java` and the `texture/`
+  classes from a reference clone (see `test/oracle/regen.sh`, which fetches
+  it), then `java -Dbench.threads=N Main`.
+- Oracle dumps: `test/oracle/regen.sh <workdir>` on any machine with a JDK.
 - The verification suite (`make test`, `test/e2e.sh`, `build/oracle_diff`)
   must pass before any number lands in this table.
+
+**#6 → #7 (unsigned tail folds + incremental refill, 12.5%).** Two
+instruction-diet changes, both semantics-preserving and re-proven against
+the oracle. (a) The modern generator's tail did signed `%` and shifts on a
+value the compiler could not prove non-negative (the `(int)` cast hid the
+48-bit mask's range), so it emitted signed-division fixup code on every
+evaluation; rewriting the tail in provably-unsigned form (identical values
+for all inputs) lets the compiler fold the constant mod and shifts away.
+(b) The candidate-refill path did 64-bit index math, a 64-bit range compare,
+and two hash-term multiplies per pull; replaced by a per-chunk pull budget
+computed once (no per-pull 64-bit compare), an incremental linear index, and
+an incremental x hash term (`+= 32·3129871`, wrapping add — the multiplies
+now run only on the rare z-carry path). This also moves work off the
+saturated multiply pipe onto the underused ALU pipe. Validated: 29,178,112
+oracle values, 0 mismatches; all 29 e2e checks including the dense
+GPU-vs-CPU exhaustive differentials; predicted 8-12% from the instruction
+model, measured 12.5%.
+
+Also in this round: the oracle harness and Java benchmark sources were
+vendored into the repo (`test/oracle/`, `test/bench-java/`) after the
+original box was recycled — `test/oracle/regen.sh` rebuilds the dumps on
+any machine with a JDK, and the regenerated dumps were verified
+byte-identical (SHA256) to the originals.
