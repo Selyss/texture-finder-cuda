@@ -94,6 +94,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    std::cout << "Backend: " << searchBackendName() << std::endl;
     std::cout << "Version: " << (version == MODERN_VERSION ? "1.21.2+" : "1.13 - 1.21.1") << std::endl;
     if (directions.size() == 1)
         std::cout << "Facing: " << DIRECTION_NAMES[directions[0]] << std::endl;

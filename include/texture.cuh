@@ -1,12 +1,21 @@
 #pragma once
-#include <cstdint>
 
-// Host- and device-compilable so the exact same code is used by the kernel,
-// the test suite, and the formation generator. Never copy these functions.
+// Compilable as C++, CUDA, and Metal Shading Language so the exact same
+// code is used by every backend, the test suite, and the tools. Never copy
+// these functions.
+#ifdef __METAL_VERSION__
+typedef int int32_t;
+typedef unsigned int uint32_t;
+typedef long int64_t;           // MSL long/ulong are 64-bit
+typedef unsigned long uint64_t;
+#define TF_HOST_DEVICE
+#else
+#include <cstdint>
 #ifdef __CUDACC__
 #define TF_HOST_DEVICE __host__ __device__
 #else
 #define TF_HOST_DEVICE
+#endif
 #endif
 
 // Reference semantics: 19MisterX98/TextureRotations (texture/*.java) and the

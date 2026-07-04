@@ -175,3 +175,32 @@ clean, register count unchanged at full occupancy. BENCHMARKS.md row 7.
 Remaining single-GPU headroom at this algorithm is now genuinely small
 (~40 issue slots/eval vs ~35 irreducible); next meaningful steps are
 multi-GPU (split the chunk cursor) or newer silicon.
+
+## Multi-backend support (2026-07-04)
+
+`make` now auto-selects a backend (override with `BACKEND=cuda|metal|cpu`):
+CUDA if nvcc is present, else Metal on macOS, else portable multithreaded
+C++. Detection is a build-system concern (a preprocessor cannot see what
+hardware/toolchains a machine has); the macros (`__METAL_VERSION__`,
+`__CUDACC__`, `__APPLE__`) select code paths within the shared sources.
+
+Design: main/parser are now plain .cpp; `include/kernel.cuh` is the
+backend-neutral interface (runSearch + searchBackendName), implemented by
+exactly one of src/kernel.cu (CUDA), src/backend_metal.mm (Apple GPU), or
+src/backend_cpu.cpp (std::thread + atomic chunk cursor). The Metal build
+concatenates include/texture.cuh + src/match.metal into one MSL source
+string at build time (C++ raw string literal), so all three backends
+compile the *same* RNG functions — texture.cuh gained an
+`__METAL_VERSION__` typedef guard and now compiles as C++, CUDA, and MSL.
+Metal specifics: runtime shader compilation (no Xcode metal toolchain
+needed), function-constant for the version (the MSL analog of the CUDA
+template), z-sliced dispatches (~2^30 threads each) to keep command
+buffers short, per-slice 32-bit exact counters summed into the u64 total
+on the host, and a saturating write-index that cannot wrap.
+
+Validation: all 29 e2e checks pass per backend — CUDA (box), Metal (M4
+Pro), CPU (M4 Pro) — including the dense exhaustive differentials and the
+truncation-total case. CUDA timing unchanged after the refactor (0.719 s).
+Reference workload: Metal on the M4 Pro 7.49 s, CPU backend 74.6 s (still
+2.6x the as-shipped Java tool on the dual-EPYC box). Numbers and framing
+in BENCHMARKS.md "Portable backends".

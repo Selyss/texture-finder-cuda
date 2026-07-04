@@ -17,10 +17,7 @@
         }                                                                         \
     } while (0)
 
-// If a search legitimately produces more matches than this, the formation is
-// far too small to identify a location anyway; the host warns and asks for a
-// tighter search instead of allocating gigabytes.
-constexpr unsigned int MAX_MATCHES = 1u << 20;
+const char *searchBackendName() { return "CUDA"; }
 
 // Tuning knobs, overridable at compile time (test/bench.sh sweeps these;
 // defaults are the winners on an RTX 3090).

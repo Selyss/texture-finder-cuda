@@ -15,7 +15,7 @@ run_config() { # <label> <defines...>
     local label=$1; shift
     local bin="build/bench_$label"
     "$NVCC" -O3 -arch=native -std=c++17 -Iinclude "$@" \
-        src/main.cu src/kernel.cu src/parser.cu -o "$bin"
+        src/main.cpp src/parser.cpp src/kernel.cu -o "$bin"
     # warmup + 3 timed runs, take best kernel time
     "$bin" $WORK 0 "$FORM" 0 >/dev/null
     local best=""

@@ -146,3 +146,25 @@ vendored into the repo (`test/oracle/`, `test/bench-java/`) after the
 original box was recycled — `test/oracle/regen.sh` rebuilds the dumps on
 any machine with a JDK, and the regenerated dumps were verified
 byte-identical (SHA256) to the originals.
+
+## Portable backends (different machine — measured on an Apple M4 Pro laptop)
+
+The same source builds three interchangeable backends behind one
+`runSearch()` interface (`make BACKEND=cuda|metal|cpu`); the Metal shader
+and the CPU backend compile the identical `include/texture.cuh` the CUDA
+kernel uses (the Metal build wraps it into the shader source verbatim).
+All three pass the full 29-check e2e suite including the exhaustive
+GPU-vs-CPU differentials. Reference workload, best of 3 (single run for
+CPU):
+
+| Backend | Hardware | Compute time |
+|---|---|---|
+| CUDA | RTX 3090 (benchmark box) | 0.72 s |
+| Metal | Apple M4 Pro, 20-core GPU | 7.49 s |
+| CPU (threaded C++) | Apple M4 Pro, 14 CPU cores | 74.6 s |
+
+For scale: the Metal backend on a fanless-class laptop chip is ~26× the
+as-shipped Java reference running on the dual-EPYC server, and even the
+portable CPU backend on the laptop beats it by ~2.6×. The 3090:M4-GPU gap
+(~10×) is larger than raw specs suggest because the position hash is
+64-bit-integer-multiply-heavy, which Apple GPUs emulate with 32-bit ops.

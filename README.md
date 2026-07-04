@@ -1,20 +1,31 @@
 # texture-finder-cuda
 - Most of the resources in this README have been provided from [19MisterX98](https://github.com/19MisterX98)
 - Handles vanilla texture rotations (1.13 – 1.21.1 and 1.21.2+)
-- Runs on the GPU using CUDA
+- Runs on NVIDIA GPUs (CUDA), Apple GPUs (Metal), or any CPU (portable
+  multithreaded C++) — all from the same code and with identical results
 - *Does not require the world seed*
 
 ## Building
-Linux/macOS (CUDA toolkit required; `nvcc` found on PATH or at `/usr/local/cuda`):
+`make` picks a backend automatically: CUDA if `nvcc` is present (on PATH or
+at `/usr/local/cuda`), otherwise Metal on macOS, otherwise the portable CPU
+backend. Override with `BACKEND=`:
 
 ```
-make            # builds build/main for the GPU in the machine (ARCH=native)
-make ARCH=sm_86 # or target a specific architecture
-make test       # host-only unit tests, no GPU needed
+make                 # auto-detect backend
+make BACKEND=cpu     # force the portable CPU backend
+make BACKEND=metal   # Apple GPU (macOS)
+make BACKEND=cuda ARCH=sm_86   # NVIDIA GPU, specific architecture
+make test            # host-only unit tests, no GPU needed
 ```
 
-Windows: `make windows` (edit `CCBIN` in the Makefile if your Visual Studio
-install path differs).
+Run `make clean` when switching backends (they share the same output
+binary). The binary prints which backend it carries (`Backend: ...`).
+Rough scale on the reference benchmark: CUDA on an RTX 3090 is ~10× an
+Apple M4 Pro GPU, which is ~10× the same machine's CPU cores — and even the
+CPU backend outruns the original Java tool (see docs/BENCHMARKS.md).
+
+Windows: `make windows NVCC=nvcc` (edit `CCBIN` in the Makefile if your
+Visual Studio install path differs).
 
 ## Obtaining Rotations
 
