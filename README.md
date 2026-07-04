@@ -1,9 +1,13 @@
 # texture-finder-cuda
+[![CI](https://github.com/Selyss/texture-finder-cuda/actions/workflows/ci.yml/badge.svg)](https://github.com/Selyss/texture-finder-cuda/actions/workflows/ci.yml)
+
 - Most of the resources in this README have been provided from [19MisterX98](https://github.com/19MisterX98)
 - Handles all five rotation modes: vanilla <=1.12.2, 1.13 – 1.21.1, 1.21.2+,
   and both legacy Sodium variants
 - Runs on NVIDIA GPUs (CUDA), Apple GPUs (Metal), or any CPU (portable
   multithreaded C++) — all from the same code and with identical results
+- Fast: 1.25 × 10¹¹ candidate positions in 0.72 s on an RTX 3090 — ~205×
+  the reference Java tool ([benchmarks](docs/BENCHMARKS.md))
 - *Does not require the world seed*
 
 ## Building
@@ -27,6 +31,15 @@ CPU backend outruns the original Java tool (see docs/BENCHMARKS.md).
 
 Windows: `make windows NVCC=nvcc` (edit `CCBIN` in the Makefile if your
 Visual Studio install path differs).
+
+### Testing
+- `make test` — unit suite against the real headers (no GPU needed)
+- `test/e2e.sh` — full end-to-end suite against whichever backend is built
+  (fixture regressions, synthetic round-trips for every version and
+  direction, exhaustive GPU-vs-CPU differentials, checkpoint/resume)
+- `test/oracle/regen.sh <workdir>` + `build/oracle_diff <workdir>/dumps` —
+  regenerates ground truth from the Java reference and verifies all five
+  modes bit-for-bit (~73M values); CI runs all of the above on every push
 
 ## Obtaining Rotations
 
@@ -129,8 +142,8 @@ vanilla in these ranges:
 The rotation formulas and the direction convention are documented in
 [docs/SEMANTICS.md](docs/SEMANTICS.md), and every change is validated by a
 four-layer test pyramid (unit vectors, a real verified formation, a ~73M
-value differential against the Java reference implementation, and GPU
-end-to-end tests) — see that document and
+value differential against the Java reference implementation, and
+end-to-end tests on every backend, enforced by CI) — see that document and
 [docs/ENGINEERING_LOG.md](docs/ENGINEERING_LOG.md) for details and
 performance history.
 
