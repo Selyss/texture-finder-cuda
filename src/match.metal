@@ -9,8 +9,10 @@
 #include <metal_stdlib>
 using namespace metal;
 
-// Selected per-launch like the CUDA template parameter.
-constant bool TF_MODERN [[function_constant(0)]];
+// Selected per-launch like the CUDA template parameter; branches on a
+// function constant are resolved at pipeline-creation time.
+// 0 modern, 1 legacy, 2 vanilla12, 3 sodium, 4 sodium19 (blockinfo.cuh).
+constant int TF_VERSION [[function_constant(0)]];
 
 struct TfParams
 {
@@ -51,8 +53,18 @@ kernel void matchFormation(device const TfBlock *blocks [[buffer(0)]],
         const TfBlock b = blocks[i];
         const int expected = b.w & 0xff;
         const int mask = b.w >> 8;
-        const int v = TF_MODERN ? getTextureModern(x + b.x, y + b.y, z + b.z, 4)
-                                : getTextureLegacy(x + b.x, y + b.y, z + b.z, 4);
+        const int64_t mix = coordMix(x + b.x, y + b.y, z + b.z);
+        int v;
+        if (TF_VERSION == 1)
+            v = legacyFromCoordRandom(mix >> 16, 4);
+        else if (TF_VERSION == 2)
+            v = vanilla12FromMix(mix, 4);
+        else if (TF_VERSION == 3)
+            v = sodiumFromCoordRandom(mix >> 16, 4);
+        else if (TF_VERSION == 4)
+            v = sodium19FromCoordRandom(mix >> 16, 4);
+        else
+            v = modernFromCoordRandom(mix >> 16, 4);
         if ((v & mask) != expected)
             return;
     }

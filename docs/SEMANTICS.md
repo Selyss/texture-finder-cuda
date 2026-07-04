@@ -86,19 +86,22 @@ the searcher tries all four orientations and reports which one matched.
    all-max corners of the search box, and as a single-cell search
    (regressions for old coverage-gap bugs).
 3. **Oracle differential** (`make tools`, then
-   `build/oracle_diff <dumps_dir>`): compares 29,178,112 values (25.2M grid
-   bytes near origin, 3k world-border extremes, 1M random coordinates,
-   each for both versions and both face kinds) against
+   `build/oracle_diff <dumps_dir>`): compares 72,945,280 values (grid bytes
+   near origin, world-border extremes, 1M random coordinates — each for all
+   five version modes and both face kinds) against
    dumps produced by the *actual Java reference code* running on a JVM.
    Regenerate anywhere with `test/oracle/regen.sh <workdir>` (needs a JDK;
    clones the reference, compiles its texture classes unmodified, and
    refuses to dump if its built-in fixture gate fails). Dumps are
    byte-identical across platforms and JDKs, so checksums can be compared
    between machines. Any divergence from Java semantics fails loudly.
-4. **Synthetic end-to-end** (`test/e2e.sh`, needs the GPU): generates
-   formations with known origins (both versions, all directions, ~40% side
-   faces), and requires the search to recover each origin uniquely — plus
-   'all'-mode direction identification and input-validation checks.
+4. **Synthetic end-to-end** (`test/e2e.sh`): generates formations with
+   known origins (all five versions, all directions, ~40% side faces), and
+   requires the search to recover each origin uniquely — plus 'all'-mode
+   direction identification, dense GPU-vs-CPU exhaustive differentials per
+   version, truncation accounting, and input-validation checks. Runs
+   against whichever backend is built (CUDA, Metal, or CPU); FAST=1
+   shrinks the fixture volume for CI runners.
 
 ## When a new Minecraft version changes the RNG
 
@@ -109,3 +112,31 @@ the searcher tries all four orientations and reports which one matched.
    `version` mapping; the old versions keep their dumps and tests.
 4. Re-run the whole pyramid; the real-world fixture must still be found by
    the version it was verified against.
+
+## The other three modes (added 2026-07-04)
+
+All validated the same way (oracle differential, e2e round-trips); the
+`% mod` in each is the same unsigned fold as legacy, and side = top-roll
+parity holds for every mode.
+
+**<=1.12.2 (`version = 2`, reference `Vanilla12Textures`):**
+```java
+rand = (int) coordMix >> 16;    // truncate the FULL 64-bit mix to int FIRST
+value = Math.abs(rand) % mod;   // no LCG scramble in this era
+```
+Note the contrast with 1.13+: there the 64-bit mix is shifted (`mix >> 16`)
+and *then* consumed; here it is truncated to 32 bits first. This is why
+`texture.cuh` exposes `coordMix` separately from `coordRandom`.
+
+**Sodium 1.0-4.1 on MC 1.16-1.18.2 (`version = 3`, reference `SodiumTextures`):**
+murmur-style avalanche of `coordRandom` (xor-shift-33 / multiply twice),
+then `rand = (int)(mix13(seed += PHI) + mix13(seed + PHI))`,
+`Math.abs(rand) % mod`. PHI = 0x9E3779B97F4A7C15.
+
+**Sodium 4.2-4.8 on MC 1.19-1.19.3 (`version = 4`, reference `Sodium19Textures`):**
+xoroshiro-style seeding: `l = seed ^ 0x6A09E667F3BCC909`, `m = l + PHI`,
+`rand = (int)(rotl64(mix13(l) + mix13(m), 17) + mix13(l))`,
+`Math.abs(rand) % mod`. `mix13` is Stafford variant 13 with logical shifts.
+
+Sodium 4.9+ reverted to the vanilla implementation, so those clients use
+`version = 0`/`1` according to their MC version.

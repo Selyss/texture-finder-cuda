@@ -109,8 +109,8 @@ std::vector<MatchResult> runSearch(const SearchBounds &bounds,
             fail("shader compilation failed", err);
 
         MTLFunctionConstantValues *consts = [MTLFunctionConstantValues new];
-        bool modern = version == MODERN_VERSION;
-        [consts setConstantValue:&modern type:MTLDataTypeBool atIndex:0];
+        int versionConst = version;
+        [consts setConstantValue:&versionConst type:MTLDataTypeInt atIndex:0];
         id<MTLFunction> fn = [lib newFunctionWithName:@"matchFormation"
                                        constantValues:consts
                                                 error:&err];

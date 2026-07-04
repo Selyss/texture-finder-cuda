@@ -64,7 +64,7 @@ static_assert(2 * MAX_FORMATION_BLOCKS * sizeof(DevBlock) <= 48 * 1024,
 // almost all the time. Warps grab chunks from a global cursor; within a chunk
 // lane L owns linear positions chunkBase + pull*32 + L, so every position in
 // [0, total) is evaluated exactly once, no matter how the grid is sized.
-template <bool MODERN>
+template <int VERSION>
 __global__ void __launch_bounds__(TF_BLOCK_THREADS)
     matchFormationKernel(SearchBounds b, int totalBlocks, unsigned long long total,
                          unsigned long long *chunkCursor,
@@ -165,8 +165,18 @@ __global__ void __launch_bounds__(TF_BLOCK_THREADS)
             const DevBlock blk = sBlocks[bi];
             const int expected = blk.w & 0xff;
             const int mask = blk.w >> 8;
-            const int64_t cr = coordRandomFromParts(hx + blk.xTerm, hz + blk.zTerm, y + blk.dy);
-            const int v = MODERN ? modernFromCoordRandom(cr, 4) : legacyFromCoordRandom(cr, 4);
+            const int64_t mix = coordMixFromParts(hx + blk.xTerm, hz + blk.zTerm, y + blk.dy);
+            int v;
+            if (VERSION == LEGACY_VERSION)
+                v = legacyFromCoordRandom(mix >> 16, 4);
+            else if (VERSION == VANILLA12_VERSION)
+                v = vanilla12FromMix(mix, 4);
+            else if (VERSION == SODIUM_VERSION)
+                v = sodiumFromCoordRandom(mix >> 16, 4);
+            else if (VERSION == SODIUM19_VERSION)
+                v = sodium19FromCoordRandom(mix >> 16, 4);
+            else
+                v = modernFromCoordRandom(mix >> 16, 4);
             if ((v & mask) != expected)
             {
                 bi = -1;
@@ -243,13 +253,33 @@ std::vector<MatchResult> runSearch(const SearchBounds &bounds,
     cudaDeviceProp props;
     CUDA_CHECK(cudaGetDeviceProperties(&props, device));
     const size_t sharedBytes = blocks.size() * sizeof(DevBlock);
+
+    // Compile-time version dispatch: resolve the kernel instantiation once.
+    using KernelFn = void (*)(SearchBounds, int, unsigned long long,
+                              unsigned long long *, MatchResult *, unsigned long long *);
+    KernelFn kernel;
+    switch (version)
+    {
+    case LEGACY_VERSION:
+        kernel = matchFormationKernel<LEGACY_VERSION>;
+        break;
+    case VANILLA12_VERSION:
+        kernel = matchFormationKernel<VANILLA12_VERSION>;
+        break;
+    case SODIUM_VERSION:
+        kernel = matchFormationKernel<SODIUM_VERSION>;
+        break;
+    case SODIUM19_VERSION:
+        kernel = matchFormationKernel<SODIUM19_VERSION>;
+        break;
+    default:
+        kernel = matchFormationKernel<MODERN_VERSION>;
+        break;
+    }
+
     int blocksPerSM = 0;
-    if (version == MODERN_VERSION)
-        CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-            &blocksPerSM, matchFormationKernel<true>, TF_BLOCK_THREADS, sharedBytes));
-    else
-        CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-            &blocksPerSM, matchFormationKernel<false>, TF_BLOCK_THREADS, sharedBytes));
+    CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+        &blocksPerSM, kernel, TF_BLOCK_THREADS, sharedBytes));
     const unsigned long long chunkSize = (unsigned long long)WARP * TF_CHUNK_PER_LANE;
     const unsigned long long chunksNeeded = total / chunkSize + (total % chunkSize != 0);
     const unsigned long long warpsNeeded = chunksNeeded; // one chunk in flight per warp
@@ -265,12 +295,8 @@ std::vector<MatchResult> runSearch(const SearchBounds &bounds,
     CUDA_CHECK(cudaEventCreate(&evStop));
     CUDA_CHECK(cudaEventRecord(evStart));
 
-    if (version == MODERN_VERSION)
-        matchFormationKernel<true><<<(unsigned int)grid, TF_BLOCK_THREADS, sharedBytes>>>(
-            bounds, (int)blocks.size(), total, d_cursor, d_out, d_count);
-    else
-        matchFormationKernel<false><<<(unsigned int)grid, TF_BLOCK_THREADS, sharedBytes>>>(
-            bounds, (int)blocks.size(), total, d_cursor, d_out, d_count);
+    kernel<<<(unsigned int)grid, TF_BLOCK_THREADS, sharedBytes>>>(
+        bounds, (int)blocks.size(), total, d_cursor, d_out, d_count);
 
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaEventRecord(evStop));

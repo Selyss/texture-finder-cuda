@@ -9,10 +9,11 @@
 // mismatches otherwise.
 //
 // Dump formats (see dumps/README.md):
-//   {legacy,modern}_{top,side}.bin  one raw byte per coordinate,
+//   {legacy,modern,vanilla12,sodium,sodium19}_{top,side}.bin  one raw byte per coordinate,
 //       offset = (yIndex*1024 + z+512)*1024 + x+512,
 //       yIndex over {-64,-54,0,63,255,319}, z,x in [-512,511]
-//   extremes.txt / random.txt  lines: "x y z legacy_top legacy_side modern_top modern_side"
+//   extremes.txt / random.txt  lines: "x y z" + top/side pairs for
+//       legacy, modern, vanilla12, sodium, sodium19 (10 value columns)
 
 #include <cstdint>
 #include <cstdio>
@@ -42,7 +43,7 @@ void checkValue(const char *what, int x, int y, int z, int oracle, int ours)
         report(what, x, y, z, oracle, ours);
 }
 
-bool diffGrid(const std::string &path, const char *what, bool modern, int mod)
+bool diffGrid(const std::string &path, const char *what, int version, int mod)
 {
     std::ifstream f(path, std::ios::binary);
     if (!f)
@@ -63,8 +64,7 @@ bool diffGrid(const std::string &path, const char *what, bool modern, int mod)
             for (int x = -512; x <= 511; x++, i++)
             {
                 const int oracle = (unsigned char)data[i];
-                const int ours = modern ? getTextureModern(x, Y_VALUES[yi], z, mod)
-                                        : getTextureLegacy(x, Y_VALUES[yi], z, mod);
+                const int ours = getTextureForVersion(version, x, Y_VALUES[yi], z, mod);
                 checkValue(what, x, Y_VALUES[yi], z, oracle, ours);
             }
     return true;
@@ -78,14 +78,20 @@ bool diffText(const std::string &path, long long expectedLines)
         std::fprintf(stderr, "Cannot open %s\n", path.c_str());
         return false;
     }
-    int x, y, z, lt, ls, mt, ms;
+    int x, y, z, lt, ls, mt, ms, vt, vs, st, ss, nt, ns;
     long long lines = 0;
-    while (f >> x >> y >> z >> lt >> ls >> mt >> ms)
+    while (f >> x >> y >> z >> lt >> ls >> mt >> ms >> vt >> vs >> st >> ss >> nt >> ns)
     {
         checkValue("legacy_top", x, y, z, lt, getTextureLegacy(x, y, z, 4));
         checkValue("legacy_side", x, y, z, ls, getTextureLegacy(x, y, z, 2));
         checkValue("modern_top", x, y, z, mt, getTextureModern(x, y, z, 4));
         checkValue("modern_side", x, y, z, ms, getTextureModern(x, y, z, 2));
+        checkValue("vanilla12_top", x, y, z, vt, getTextureVanilla12(x, y, z, 4));
+        checkValue("vanilla12_side", x, y, z, vs, getTextureVanilla12(x, y, z, 2));
+        checkValue("sodium_top", x, y, z, st, getTextureSodium(x, y, z, 4));
+        checkValue("sodium_side", x, y, z, ss, getTextureSodium(x, y, z, 2));
+        checkValue("sodium19_top", x, y, z, nt, getTextureSodium19(x, y, z, 4));
+        checkValue("sodium19_side", x, y, z, ns, getTextureSodium19(x, y, z, 2));
         lines++;
     }
     std::printf("%s: %lld lines\n", path.c_str(), lines);
@@ -118,10 +124,16 @@ int main(int argc, char *argv[])
     const std::string dir = argv[1];
 
     bool ok = true;
-    ok &= diffGrid(dir + "/legacy_top.bin", "legacy_top", false, 4);
-    ok &= diffGrid(dir + "/legacy_side.bin", "legacy_side", false, 2);
-    ok &= diffGrid(dir + "/modern_top.bin", "modern_top", true, 4);
-    ok &= diffGrid(dir + "/modern_side.bin", "modern_side", true, 2);
+    ok &= diffGrid(dir + "/legacy_top.bin", "legacy_top", 1, 4);
+    ok &= diffGrid(dir + "/legacy_side.bin", "legacy_side", 1, 2);
+    ok &= diffGrid(dir + "/modern_top.bin", "modern_top", 0, 4);
+    ok &= diffGrid(dir + "/modern_side.bin", "modern_side", 0, 2);
+    ok &= diffGrid(dir + "/vanilla12_top.bin", "vanilla12_top", 2, 4);
+    ok &= diffGrid(dir + "/vanilla12_side.bin", "vanilla12_side", 2, 2);
+    ok &= diffGrid(dir + "/sodium_top.bin", "sodium_top", 3, 4);
+    ok &= diffGrid(dir + "/sodium_side.bin", "sodium_side", 3, 2);
+    ok &= diffGrid(dir + "/sodium19_top.bin", "sodium19_top", 4, 4);
+    ok &= diffGrid(dir + "/sodium19_side.bin", "sodium19_side", 4, 2);
     ok &= diffText(dir + "/extremes.txt", 3072);
     ok &= diffText(dir + "/random.txt", 1000000);
 

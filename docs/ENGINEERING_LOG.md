@@ -204,3 +204,30 @@ truncation-total case. CUDA timing unchanged after the refactor (0.719 s).
 Reference workload: Metal on the M4 Pro 7.49 s, CPU backend 74.6 s (still
 2.6x the as-shipped Java tool on the dual-EPYC box). Numbers and framing
 in BENCHMARKS.md "Portable backends".
+
+## Full version parity + CI (2026-07-04)
+
+Implemented the three remaining rotation modes in the shared header —
+Vanilla12 (<=1.12.2, `version 2`), Sodium 1.0-4.1 (`version 3`), Sodium
+4.2-4.8 (`version 4`) — closing the feature gap with the reference tool.
+The <=1.12 path forced a small API split (`coordMix` vs `coordRandom`):
+that era truncates the full 64-bit position mix to int BEFORE shifting,
+unlike every later version. The Sodium mixers (murmur avalanche + Stafford
+mix13; xoroshiro-style seeding + rotate) are implemented in fully unsigned
+arithmetic like everything else. CUDA dispatches per-version at compile
+time (5 kernel instantiations selected via one function-pointer switch),
+Metal via an int function constant, host paths via getTextureForVersion.
+
+Validation: oracle extended to all five modes — **72,945,280 values, 0
+mismatches** on first try; e2e grew to 56 checks (synthetics and dense
+exhaustive differentials for every version) and passes on all three
+backends (CUDA on the box, Metal + CPU on the M4 Pro); unit suite now
+249,765 assertions including oracle-derived vectors for the new modes.
+Modern-mode CUDA perf unchanged (0.722 s); Sodium19 runs the reference
+volume in 1.29 s (two extra Stafford rounds per evaluation).
+
+CI added (.github/workflows/ci.yml): Linux job = unit suite + CPU-backend
+e2e (FAST fixture volume) + full oracle regeneration from the reference
+repo + the 73M-value differential; macOS job = unit suite + Metal backend
+build + best-effort Metal smoke + CPU e2e. Every push now re-proves the
+semantics against the actual Java reference with no GPU required.

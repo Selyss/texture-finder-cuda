@@ -5,7 +5,10 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.Random;
 
+import texture.Sodium19Textures;
+import texture.SodiumTextures;
 import texture.TextureProvider;
+import texture.Vanilla12Textures;
 import texture.Vanilla21_1Textures;
 import texture.VanillaTextures;
 
@@ -32,6 +35,9 @@ public class Dump {
 
     static final TextureProvider LEGACY = new Vanilla21_1Textures();
     static final TextureProvider MODERN = new VanillaTextures();
+    static final TextureProvider VANILLA12 = new Vanilla12Textures();
+    static final TextureProvider SODIUM = new SodiumTextures();
+    static final TextureProvider SODIUM19 = new Sodium19Textures();
 
     static final int[] GRID_Y = {-64, -54, 0, 63, 255, 319};
     static final int[] EXTREME_Y = {-64, 0, 319};
@@ -77,7 +83,10 @@ public class Dump {
     static String line(int x, int y, int z) {
         return x + " " + y + " " + z + " "
                 + LEGACY.getTexture(x, y, z, 4) + " " + LEGACY.getTexture(x, y, z, 2) + " "
-                + MODERN.getTexture(x, y, z, 4) + " " + MODERN.getTexture(x, y, z, 2);
+                + MODERN.getTexture(x, y, z, 4) + " " + MODERN.getTexture(x, y, z, 2) + " "
+                + VANILLA12.getTexture(x, y, z, 4) + " " + VANILLA12.getTexture(x, y, z, 2) + " "
+                + SODIUM.getTexture(x, y, z, 4) + " " + SODIUM.getTexture(x, y, z, 2) + " "
+                + SODIUM19.getTexture(x, y, z, 4) + " " + SODIUM19.getTexture(x, y, z, 2);
     }
 
     static void generate(File dir) throws IOException {
@@ -87,6 +96,12 @@ public class Dump {
         grid(dir, "legacy_side.bin", LEGACY, 2);
         grid(dir, "modern_top.bin", MODERN, 4);
         grid(dir, "modern_side.bin", MODERN, 2);
+        grid(dir, "vanilla12_top.bin", VANILLA12, 4);
+        grid(dir, "vanilla12_side.bin", VANILLA12, 2);
+        grid(dir, "sodium_top.bin", SODIUM, 4);
+        grid(dir, "sodium_side.bin", SODIUM, 2);
+        grid(dir, "sodium19_top.bin", SODIUM19, 4);
+        grid(dir, "sodium19_side.bin", SODIUM19, 2);
 
         // 32 values: {-30000000..-29999985} then {29999985..30000000}
         int[] ex = new int[32];
@@ -118,7 +133,8 @@ public class Dump {
             w.println("- `{legacy,modern}_{top,side}.bin`: one raw byte per coordinate;");
             w.println("  offset = (yIndex*1024 + z+512)*1024 + x+512;");
             w.println("  yIndex over {-64,-54,0,63,255,319}; z,x in [-512,511].");
-            w.println("- `extremes.txt`, `random.txt`: lines \"x y z legacy_top legacy_side modern_top modern_side\".");
+            w.println("- `extremes.txt`, `random.txt`: lines \"x y z\" followed by top/side pairs");
+            w.println("  for legacy, modern, vanilla12, sodium, sodium19 (10 value columns).");
             w.println("- random.txt: java.util.Random(12345); per coordinate, in order:");
             w.println("  x = -30000000 + nextInt(60000001); z likewise; y = -64 + nextInt(384).");
         }

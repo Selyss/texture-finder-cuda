@@ -20,10 +20,6 @@ namespace
 {
 const char *DIRECTION_NAMES[4] = {"North", "West", "South", "East"};
 
-int textureAt(bool modern, int x, int y, int z, int mod)
-{
-    return modern ? getTextureModern(x, y, z, mod) : getTextureLegacy(x, y, z, mod);
-}
 } // namespace
 
 int main(int argc, char *argv[])
@@ -38,7 +34,7 @@ int main(int argc, char *argv[])
     const int x_min = std::atoi(argv[1]), x_max = std::atoi(argv[2]);
     const int y_min = std::atoi(argv[3]), y_max = std::atoi(argv[4]);
     const int z_min = std::atoi(argv[5]), z_max = std::atoi(argv[6]);
-    const bool modern = std::atoi(argv[7]) == MODERN_VERSION;
+    const int version = std::atoi(argv[7]);
 
     std::vector<int> directions;
     const bool allMode = std::string(argv[9]) == "all";
@@ -79,8 +75,8 @@ int main(int argc, char *argv[])
                 {
                     bool ok = true;
                     for (const auto &b : blocks)
-                        if (textureAt(modern, x + b.x, y + b.y, z + b.z,
-                                      b.isSide ? MOD_SIDE : MOD_TOP_BOTTOM) != b.rotation)
+                        if (getTextureForVersion(version, x + b.x, y + b.y, z + b.z,
+                                                  b.isSide ? MOD_SIDE : MOD_TOP_BOTTOM) != b.rotation)
                         {
                             ok = false;
                             break;

@@ -122,7 +122,9 @@ value tiling, multi-pass filtering, ILP dual-candidates) in
   it), then `java -Dbench.threads=N Main`.
 - Oracle dumps: `test/oracle/regen.sh <workdir>` on any machine with a JDK.
 - The verification suite (`make test`, `test/e2e.sh`, `build/oracle_diff`)
-  must pass before any number lands in this table.
+  must pass before any number lands in this table. CI (GitHub Actions) runs
+  the unit suite, the CPU-backend e2e, and the full oracle differential on
+  every push.
 
 **#6 → #7 (unsigned tail folds + incremental refill, 12.5%).** Two
 instruction-diet changes, both semantics-preserving and re-proven against

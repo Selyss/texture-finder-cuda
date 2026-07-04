@@ -26,7 +26,8 @@ void usage(const char *prog)
 {
     std::cerr << "Usage: " << prog
               << " <x_min> <x_max> <y_min> <y_max> <z_min> <z_max> <version> <file> <direction>\n"
-              << "  version:   0 = 1.21.2+, 1 = 1.13 - 1.21.1\n"
+              << "  version:   0 = 1.21.2+, 1 = 1.13 - 1.21.1, 2 = <=1.12.2,\n"
+              << "             3 = Sodium 1.0-4.1 (MC 1.16-1.18.2), 4 = Sodium 4.2-4.8 (MC 1.19-1.19.3)\n"
               << "  direction: 0 = North, 1 = West, 2 = South, 3 = East, or 'all' to search\n"
               << "             every orientation and report which one matched\n";
 }
@@ -78,7 +79,7 @@ int main(int argc, char *argv[])
         if (bounds.x_min > bounds.x_max || bounds.y_min > bounds.y_max || bounds.z_min > bounds.z_max)
             throw std::runtime_error("min bound exceeds max bound");
 
-        version = parseIntArg(argv[7], "version", 0, 1);
+        version = parseIntArg(argv[7], "version", 0, NUM_VERSIONS - 1);
 
         if (std::string(argv[9]) == "all")
             directions = {0, 1, 2, 3};
@@ -95,7 +96,10 @@ int main(int argc, char *argv[])
     }
 
     std::cout << "Backend: " << searchBackendName() << std::endl;
-    std::cout << "Version: " << (version == MODERN_VERSION ? "1.21.2+" : "1.13 - 1.21.1") << std::endl;
+    const char *VERSION_NAMES[NUM_VERSIONS] = {"1.21.2+", "1.13 - 1.21.1", "<=1.12.2",
+                                               "Sodium 1.0-4.1 (MC 1.16 - 1.18.2)",
+                                               "Sodium 4.2-4.8 (MC 1.19 - 1.19.3)"};
+    std::cout << "Version: " << VERSION_NAMES[version] << std::endl;
     if (directions.size() == 1)
         std::cout << "Facing: " << DIRECTION_NAMES[directions[0]] << std::endl;
     else

@@ -33,7 +33,13 @@ check() { # <label> <expected-line> <output> [expected-match-count]
 }
 
 # 1. Real-world fixture: must be found uniquely in the original search bounds.
-out=$($BIN -175000 -75000 -64 -40 -75000 -25000 0 test/fixtures/formation_a.txt 0)
+#    FAST=1 (CI on weak runners) shrinks the volume around the known match;
+#    the default exercises the full original bounds.
+if [ "${FAST:-0}" = "1" ]; then
+    out=$($BIN -110723 -106723 -64 -40 -71736 -67736 0 test/fixtures/formation_a.txt 0)
+else
+    out=$($BIN -175000 -75000 -64 -40 -75000 -25000 0 test/fixtures/formation_a.txt 0)
+fi
 check "fixture formation_a" "Match found at [-108723, -54, -69736]" "$out"
 
 # 2. Fixture at the exact single cell (regression: the old grid math searched
@@ -48,10 +54,10 @@ check "fixture at min corner" "Match found at [-108723, -54, -69736]" "$out"
 out=$($BIN -109000 -108723 -64 -54 -70000 -69736 0 test/fixtures/formation_a.txt 0)
 check "fixture at max corner" "Match found at [-108723, -54, -69736]" "$out"
 
-# 4. Synthetic round-trips: random origins, both versions, every direction,
+# 4. Synthetic round-trips: random origins, every version, every direction,
 #    with ~40% side faces. The searcher must recover the origin uniquely.
 seed=1
-for version in 0 1; do
+for version in 0 1 2 3 4; do
     for dir in 0 1 2 3; do
         ox=$(( (seed * 7919 + RANDOM) % 120001 - 60000 ))
         oy=$(( (RANDOM % 300) - 60 ))
@@ -89,8 +95,9 @@ diff_case() { # <label> <args...>
 }
 
 echo "1 -1 2 2 0" > "$TMP/one.txt"           # single top block: ~25% of all positions match
-diff_case "dense 1-block v0" 100 139 10 29 -220 -181 0 "$TMP/one.txt" 0
-diff_case "dense 1-block v1" 100 139 10 29 -220 -181 1 "$TMP/one.txt" 0
+for v in 0 1 2 3 4; do
+    diff_case "dense 1-block v$v" 100 139 10 29 -220 -181 "$v" "$TMP/one.txt" 0
+done
 printf '0 0 0 1 0\n2 0 1 1 1\n1 1 2 3 0\n' > "$TMP/three.txt"
 diff_case "weak 3-block v0 all-mode" -3010 -2981 40 59 512 541 0 "$TMP/three.txt" all
 diff_case "weak 3-block v1 dir2" -3010 -2981 40 59 512 541 1 "$TMP/three.txt" 2

@@ -3,7 +3,7 @@
 // file is expressed in the "recreation frame" for the given direction: after
 // the searcher rotates it <direction> times, it equals the ground truth.
 //
-// Usage: gen_formation <version 0|1> <direction 0-3> <ox> <oy> <oz> <count> <sidePercent> <seed>
+// Usage: gen_formation <version 0-4> <direction 0-3> <ox> <oy> <oz> <count> <sidePercent> <seed>
 // Output on stdout; '#' header lines record the parameters.
 
 #include <cstdio>
@@ -22,7 +22,7 @@ int main(int argc, char *argv[])
     if (argc != 9)
     {
         std::fprintf(stderr,
-                     "Usage: %s <version 0|1> <direction 0-3> <ox> <oy> <oz> <count> <sidePercent> <seed>\n",
+                     "Usage: %s <version 0-4> <direction 0-3> <ox> <oy> <oz> <count> <sidePercent> <seed>\n",
                      argv[0]);
         return 1;
     }
@@ -35,7 +35,7 @@ int main(int argc, char *argv[])
     const int sidePercent = std::atoi(argv[7]);
     const unsigned seed = (unsigned)std::strtoul(argv[8], nullptr, 10);
 
-    if (version < 0 || version > 1 || direction < 0 || direction > 3 || count < 1 ||
+    if (version < 0 || version >= NUM_VERSIONS || direction < 0 || direction > 3 || count < 1 ||
         count > MAX_FORMATION_BLOCKS || sidePercent < 0 || sidePercent > 100)
     {
         std::fprintf(stderr, "Invalid arguments\n");
@@ -59,9 +59,7 @@ int main(int argc, char *argv[])
         b.z = bz;
         b.isSide = pct(rng) < sidePercent;
         const int mod = b.isSide ? MOD_SIDE : MOD_TOP_BOTTOM;
-        b.rotation = version == MODERN_VERSION
-                         ? getTextureModern(ox + bx, oy + by, oz + bz, mod)
-                         : getTextureLegacy(ox + bx, oy + by, oz + bz, mod);
+        b.rotation = getTextureForVersion(version, ox + bx, oy + by, oz + bz, mod);
         truth.push_back(b);
     }
 

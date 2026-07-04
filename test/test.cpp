@@ -43,10 +43,38 @@ TEST_CASE("getTextureModern - side faces are the parity of the top roll")
     for (int x = -64; x <= 64; x++)
         for (int z = -64; z <= 64; z++)
             for (int y : {-64, 0, 200})
-            {
-                CHECK(getTextureModern(x, y, z, 2) == getTextureModern(x, y, z, 4) % 2);
-                CHECK(getTextureLegacy(x, y, z, 2) == getTextureLegacy(x, y, z, 4) % 2);
-            }
+                for (int version = 0; version < NUM_VERSIONS; version++)
+                    CHECK(getTextureForVersion(version, x, y, z, 2) ==
+                          getTextureForVersion(version, x, y, z, 4) % 2);
+}
+
+// Oracle-derived vectors for the other version modes (test/oracle/Dump.java
+// query output, produced by the unmodified reference classes on a JVM).
+TEST_CASE("getTextureVanilla12 / Sodium / Sodium19 - oracle vectors")
+{
+    CHECK(getTextureVanilla12(0, 0, 0, 4) == 0);
+    CHECK(getTextureVanilla12(1, 0, 0, 4) == 3);
+    CHECK(getTextureVanilla12(-1, 0, 0, 4) == 0);
+    CHECK(getTextureVanilla12(0, 0, 1, 4) == 0);
+    CHECK(getTextureVanilla12(0, 0, -1, 4) == 0);
+    CHECK(getTextureVanilla12(-98765, 64, 43210, 4) == 1);
+    CHECK(getTextureVanilla12(-98765, 64, 43210, 2) == 1);
+
+    CHECK(getTextureSodium(0, 0, 0, 4) == 3);
+    CHECK(getTextureSodium(1, 0, 0, 4) == 0);
+    CHECK(getTextureSodium(-1, 0, 0, 4) == 3);
+    CHECK(getTextureSodium(0, 0, 1, 4) == 3);
+    CHECK(getTextureSodium(0, 0, -1, 4) == 1);
+    CHECK(getTextureSodium(-98765, 64, 43210, 4) == 1);
+    CHECK(getTextureSodium(-98765, 64, 43210, 2) == 1);
+
+    CHECK(getTextureSodium19(0, 0, 0, 4) == 2);
+    CHECK(getTextureSodium19(1, 0, 0, 4) == 1);
+    CHECK(getTextureSodium19(-1, 0, 0, 4) == 0);
+    CHECK(getTextureSodium19(0, 0, 1, 4) == 0);
+    CHECK(getTextureSodium19(0, 0, -1, 4) == 0);
+    CHECK(getTextureSodium19(-98765, 64, 43210, 4) == 3);
+    CHECK(getTextureSodium19(-98765, 64, 43210, 2) == 1);
 }
 
 TEST_CASE("getTextureLegacy - mod 4")

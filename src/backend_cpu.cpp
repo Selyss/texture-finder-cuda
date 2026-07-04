@@ -28,7 +28,7 @@ struct Shared
     SearchBounds b;
     const BlockInfo *blocks;
     int nBlocks;
-    bool modern;
+    int version;
     unsigned long long total;
     long long nx, nz;
     std::atomic<unsigned long long> cursor{0};
@@ -63,8 +63,7 @@ void worker(Shared &S)
             {
                 const BlockInfo &bi = S.blocks[i];
                 const int mod = bi.isSide ? MOD_SIDE : MOD_TOP_BOTTOM;
-                const int v = S.modern ? getTextureModern(x + bi.x, y + bi.y, z + bi.z, mod)
-                                       : getTextureLegacy(x + bi.x, y + bi.y, z + bi.z, mod);
+                const int v = getTextureForVersion(S.version, x + bi.x, y + bi.y, z + bi.z, mod);
                 if (v != bi.rotation)
                 {
                     ok = false;
@@ -129,7 +128,7 @@ std::vector<MatchResult> runSearch(const SearchBounds &bounds,
     S.b = bounds;
     S.blocks = blocks.data();
     S.nBlocks = (int)blocks.size();
-    S.modern = version == MODERN_VERSION;
+    S.version = version;
     S.nx = (long long)bounds.x_max - bounds.x_min + 1;
     S.nz = (long long)bounds.z_max - bounds.z_min + 1;
     const unsigned long long ny = (unsigned long long)((long long)bounds.y_max - bounds.y_min + 1);
