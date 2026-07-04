@@ -231,3 +231,40 @@ e2e (FAST fixture volume) + full oracle regeneration from the reference
 repo + the 73M-value differential; macOS job = unit suite + Metal backend
 build + best-effort Metal smoke + CPU e2e. Every push now re-proves the
 semantics against the actual Java reference with no GPU required.
+
+## World-scale usability: progress, streaming, checkpoint/resume, lint (2026-07-04)
+
+Measured world-scan reality made these necessary: 100k x 100k is 0.06 s per
+y-layer / 22 s full height on the 3090, but a full +/-30M world is ~6 h per
+layer and ~95 days at full height — multi-hour-to-multi-day runs need
+visibility and crash safety.
+
+Design: a backend-agnostic driver in main.cpp slices volumes above 1e9
+positions into z-bands (adaptively sized to ~2 s each from the measured
+rate; first slice 2e8 for fast feedback) and calls the unchanged
+runSearch() per band, so CUDA, Metal, and CPU all inherit every feature:
+
+- live progress/ETA line on stderr (carriage-return updates on a TTY,
+  periodic lines otherwise; stdout stays clean for scripting);
+- matches print the moment their slice completes instead of at the end;
+- `--checkpoint <file>`: state saved after every slice (atomic tmp+rename;
+  FNV signature over args+formation refuses mismatched resumes; file
+  removed on completion). TF_MAX_SLICES env is a test hook that exits(3)
+  after N slices so e2e can exercise a deterministic interrupt+resume on
+  every backend;
+- the weak-formation warning now computes exactly how many blocks are
+  missing for a unique result in the requested volume (top = 2 bits, side
+  = 1 bit vs log2(volume)+6.6 needed).
+
+Metal backend gained a pipeline cache (shader was recompiled per
+runSearch call — irrelevant at 1 call/run, ~100 ms x hundreds of slices
+otherwise).
+
+One field bug caught by running a real 22 s scan: progress ended at 150%.
+The default-constructed checkpoint's nextZ=0 leaked into the progress
+baseline as (0 - z_min) x rowsPerZ phantom positions — exactly +50% for
+z-symmetric bounds. Search results were unaffected (the counter was
+display-only). Fixed; e2e now asserts a sliced run ends at exactly 100.0%.
+
+Validation: 59 e2e checks on all three backends; reference-workload perf
+unchanged (0.719-0.724 s) — slicing overhead is unmeasurable.

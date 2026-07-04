@@ -120,7 +120,44 @@ else
     fails=$((fails + 1))
 fi
 
-# 7. Input validation must fail loudly, not run garbage.
+# 7. Sliced-path + checkpoint/resume. The volume exceeds the slicing
+#    threshold, and the fixture origin sits at the far z end so the match is
+#    found by the RESUMED process, not the first one. TF_MAX_SLICES=1 makes
+#    the first process exit(3) after one slice with state saved.
+CKPT="$TMP/state.ckpt"
+CKARGS=(-128723 -88723 -54 -54 -94736 -69736 0 test/fixtures/formation_a.txt 0)
+set +e
+TF_MAX_SLICES=1 $BIN "${CKARGS[@]}" --checkpoint "$CKPT" >"$TMP/ck1.out" 2>/dev/null
+rc=$?
+set -e
+if [ "$rc" -eq 3 ] && [ -f "$CKPT" ] && ! grep -q "^Match found" "$TMP/ck1.out"; then
+    echo "PASS: checkpoint saved on early stop"
+else
+    echo "FAIL: checkpoint early stop (rc=$rc, file $([ -f "$CKPT" ] && echo exists || echo missing))"
+    fails=$((fails + 1))
+fi
+out=$($BIN "${CKARGS[@]}" --checkpoint "$CKPT" 2>/dev/null)
+if grep -qF "Resuming from checkpoint" <<<"$out" \
+   && grep -qF "Match found at [-108723, -54, -69736]" <<<"$out" \
+   && grep -qF "1 match" <<<"$out" && [ ! -f "$CKPT" ]; then
+    echo "PASS: resume completes, finds the match, removes state"
+else
+    echo "FAIL: checkpoint resume"
+    echo "$out" | sed 's/^/    /'
+    fails=$((fails + 1))
+fi
+
+# 8. Progress accounting: a sliced run must end at exactly 100.0%
+#    (regression: an uninitialized checkpoint baseline once inflated it).
+perr=$($BIN "${CKARGS[@]}" 2>&1 >/dev/null | grep Progress | tail -1)
+if grep -qF "Progress: 100.0%" <<<"$perr"; then
+    echo "PASS: progress ends at 100.0%"
+else
+    echo "FAIL: progress accounting — got: $perr"
+    fails=$((fails + 1))
+fi
+
+# 9. Input validation must fail loudly, not run garbage.
 if $BIN 0 100 0 10 0 100 0 <(echo "1 2 3 9 0") 0 >"$TMP/bad.out" 2>&1; then
     echo "FAIL: invalid rotation accepted"; fails=$((fails + 1))
 else

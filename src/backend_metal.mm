@@ -49,6 +49,61 @@ struct TfBlock
 
 } // namespace
 
+namespace
+{
+
+// Pipeline cache: runSearch is called once per slice by the host-side
+// progress/checkpoint driver, and shader compilation costs ~100 ms — done
+// once per version instead of once per call.
+id<MTLDevice> sDevice;
+id<MTLCommandQueue> sQueue;
+id<MTLComputePipelineState> sPSO[NUM_VERSIONS];
+
+id<MTLComputePipelineState> ensurePipeline(int version)
+{
+    if (sPSO[version])
+        return sPSO[version];
+
+    if (!sDevice)
+    {
+        sDevice = MTLCreateSystemDefaultDevice();
+        if (!sDevice)
+        {
+            std::fprintf(stderr,
+                         "No Metal device available; rebuild with `make BACKEND=cpu`\n");
+            std::exit(2);
+        }
+        sQueue = [sDevice newCommandQueue];
+    }
+
+    std::string src = "#define TF_MAX_MATCHES " + std::to_string(MAX_MATCHES) + "u\n";
+    src += kShaderBody;
+
+    NSError *err = nil;
+    id<MTLLibrary> lib = [sDevice newLibraryWithSource:@(src.c_str())
+                                               options:nil
+                                                 error:&err];
+    if (!lib)
+        fail("shader compilation failed", err);
+
+    MTLFunctionConstantValues *consts = [MTLFunctionConstantValues new];
+    int versionConst = version;
+    [consts setConstantValue:&versionConst type:MTLDataTypeInt atIndex:0];
+    id<MTLFunction> fn = [lib newFunctionWithName:@"matchFormation"
+                                   constantValues:consts
+                                            error:&err];
+    if (!fn)
+        fail("function specialization failed", err);
+    id<MTLComputePipelineState> pso = [sDevice newComputePipelineStateWithFunction:fn
+                                                                             error:&err];
+    if (!pso)
+        fail("pipeline creation failed", err);
+    sPSO[version] = pso;
+    return pso;
+}
+
+} // namespace
+
 std::vector<MatchResult> runSearch(const SearchBounds &bounds,
                                    const std::vector<BlockInfo> &topsAndBottoms,
                                    const std::vector<BlockInfo> &sides,
@@ -90,37 +145,9 @@ std::vector<MatchResult> runSearch(const SearchBounds &bounds,
 
     @autoreleasepool
     {
-        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-        if (!device)
-        {
-            std::fprintf(stderr,
-                         "No Metal device available; rebuild with `make BACKEND=cpu`\n");
-            std::exit(2);
-        }
-
-        std::string src = "#define TF_MAX_MATCHES " + std::to_string(MAX_MATCHES) + "u\n";
-        src += kShaderBody;
-
-        NSError *err = nil;
-        id<MTLLibrary> lib = [device newLibraryWithSource:@(src.c_str())
-                                                  options:nil
-                                                    error:&err];
-        if (!lib)
-            fail("shader compilation failed", err);
-
-        MTLFunctionConstantValues *consts = [MTLFunctionConstantValues new];
-        int versionConst = version;
-        [consts setConstantValue:&versionConst type:MTLDataTypeInt atIndex:0];
-        id<MTLFunction> fn = [lib newFunctionWithName:@"matchFormation"
-                                       constantValues:consts
-                                                error:&err];
-        if (!fn)
-            fail("function specialization failed", err);
-        id<MTLComputePipelineState> pso = [device newComputePipelineStateWithFunction:fn
-                                                                                error:&err];
-        if (!pso)
-            fail("pipeline creation failed", err);
-        id<MTLCommandQueue> queue = [device newCommandQueue];
+        id<MTLComputePipelineState> pso = ensurePipeline(version);
+        id<MTLDevice> device = sDevice;
+        id<MTLCommandQueue> queue = sQueue;
 
         id<MTLBuffer> bBlocks = [device newBufferWithBytes:blocks.data()
                                                     length:blocks.size() * sizeof(TfBlock)

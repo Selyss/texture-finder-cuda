@@ -92,6 +92,14 @@ main <x_min> <x_max> <y_min> <y_max> <z_min> <z_max> <version> <file> <direction
 - `direction`: the direction the formation is facing — `0` North, `1` West,
   `2` South, `3` East, or `all` to try every orientation and report which
   one matched (recommended when unsure)
+- `--checkpoint <file>` (optional): persist progress after every work slice;
+  rerunning the identical command resumes an interrupted search where it
+  stopped (the state file is verified against the arguments and formation,
+  and removed on completion)
+
+Large searches show a live progress line with ETA on stderr and print
+matches as they are found. If the formation is too weak to give a unique
+result in the requested volume, the program says how many blocks to add.
 
 Example:
 
