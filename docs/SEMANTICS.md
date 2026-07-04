@@ -89,9 +89,12 @@ the searcher tries all four orientations and reports which one matched.
    `build/oracle_diff <dumps_dir>`): compares 29,178,112 values (25.2M grid
    bytes near origin, 3k world-border extremes, 1M random coordinates,
    each for both versions and both face kinds) against
-   dumps produced by the *actual Java reference code* running on a JVM
-   (`/root/oracle/` on the GPU box; regenerate with `regen.sh`). Any
-   divergence from Java semantics fails loudly.
+   dumps produced by the *actual Java reference code* running on a JVM.
+   Regenerate anywhere with `test/oracle/regen.sh <workdir>` (needs a JDK;
+   clones the reference, compiles its texture classes unmodified, and
+   refuses to dump if its built-in fixture gate fails). Dumps are
+   byte-identical across platforms and JDKs, so checksums can be compared
+   between machines. Any divergence from Java semantics fails loudly.
 4. **Synthetic end-to-end** (`test/e2e.sh`, needs the GPU): generates
    formations with known origins (both versions, all directions, ~40% side
    faces), and requires the search to recover each origin uniquely — plus
@@ -99,7 +102,7 @@ the searcher tries all four orientations and reports which one matched.
 
 ## When a new Minecraft version changes the RNG
 
-1. Update the reference clone on the box and rerun `/root/oracle/regen.sh`
+1. Update the reference clone and rerun `test/oracle/regen.sh <workdir>`
    (it refuses to produce dumps if the built-in fixture gate fails).
 2. Run `build/oracle_diff` — it will show exactly where behavior changed.
 3. Add/adjust the corresponding function in `include/texture.cuh` and a
