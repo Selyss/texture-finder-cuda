@@ -268,3 +268,47 @@ display-only). Fixed; e2e now asserts a sliced run ends at exactly 100.0%.
 
 Validation: 59 e2e checks on all three backends; reference-workload perf
 unchanged (0.719-0.724 s) — slicing overhead is unmeasurable.
+
+## Experiment: SMT-solver inversion of the rotation hash (2026-07-06) — negative
+
+Question: can a solver recover the coordinate directly from observed
+rotations (constraint solving) instead of forward-scanning candidates?
+If it worked, world-scale searches would collapse from GPU-days to
+milliseconds.
+
+Facts established first (these hold and are worth keeping):
+- The quadratic core l = 42317861*u^2 + 11u mod 2^64 is exactly 2-to-1 and
+  efficiently invertible by Hensel lifting (derivative 2Cu+11 is always
+  odd; verified numerically 2000/2000). Given a full 48-bit post-mix
+  state, the coordinate falls out almost directly (the x-term is only 32
+  bits, so z is recoverable from u's high bits, then x by multiplying by
+  the odd constant's inverse mod 2^32).
+- The output stage (cr ^ M)*M + 11 mod 2^48 is affine, i.e.
+  lattice-friendly in isolation.
+- The hardness is therefore localized: each block reveals only 2 bits of
+  its 48-bit state, and the 24 per-block states are coupled through
+  u_i = int32((x+dx_i)*A) XOR (z+dz_i)*B XOR (y+dy_i) - XOR-of-arithmetic,
+  which defeats pure lattice methods.
+
+Experiment: Z3 4.16 QF_BV encoding of the full modern pipeline over
+symbolic (x, y, z), 24 fixture-block constraints. Encoding validated
+against ground truth first: with the coordinate pinned to the verified
+answer it is SAT instantly and forward-verifies (no false-negative risk
+from encoding bugs). With the coordinate free and bounded to the ORIGINAL
+search box (1.25e11 positions - the same box the CUDA scanner solves in
+0.72 s), Z3 in parallel mode burned ~2 CPU-hours (>30 min wall on an M4
+Pro) without producing a solution; killed. The interesting outcome
+(structural collapse in seconds) did not occur even at the smallest scale,
+so the scaling phases were moot.
+
+Conclusion: off-the-shelf SMT solving does not beat forward scanning for
+this hash; the XOR/arithmetic coupling across blocks is an effective
+barrier in practice, exactly as community folklore held - though the
+reason is narrower than "the hash is irreversible" (most of it reverses
+fine). Future attempts should start from: a dedicated QF_BV solver
+(bitwuzla/kissat via SMT-LIB export), fixing y (drops 9 unknown bits),
+more observed blocks (overdetermination helps solvers), or custom search
+exploiting the Hensel inversion (enumerate low-16 l-bits per candidate
+state). The experiment script was deliberately kept out of the repo
+(scratchpad-only); this entry preserves the encoding facts needed to
+recreate it in an afternoon.
