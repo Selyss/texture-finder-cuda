@@ -181,7 +181,9 @@ four-layer test pyramid (unit vectors, a real verified formation, a ~73M
 value differential against the Java reference implementation, and
 end-to-end tests on every backend, enforced by CI) — see that document and
 [docs/ENGINEERING_LOG.md](docs/ENGINEERING_LOG.md) for details and
-performance history.
+performance history. [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) is a flat
+index of every experiment and benchmark (kept and rejected) with the raw
+numbers.
 
 # Credits
 https://github.com/19MisterX98/TextureRotations

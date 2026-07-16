@@ -139,7 +139,8 @@ computed once (no per-pull 64-bit compare), an incremental linear index, and
 an incremental x hash term (`+= 32·3129871`, wrapping add — the multiplies
 now run only on the rare z-carry path). This also moves work off the
 saturated multiply pipe onto the underused ALU pipe. Validated: 29,178,112
-oracle values, 0 mismatches; all 29 e2e checks including the dense
+oracle values, 0 mismatches (the 2-version oracle of this round; the suite
+now covers 72,945,280 values across all five versions); all 29 e2e checks including the dense
 GPU-vs-CPU exhaustive differentials; predicted 8-12% from the instruction
 model, measured 12.5%.
 
