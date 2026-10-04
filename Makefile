@@ -24,11 +24,16 @@ ifeq ($(BACKEND),auto)
   endif
 endif
 
+# -Wall -Wextra -Wshadow catch the class of silent integer/shadowing bugs the
+# original code shipped; not -Wconversion/-Wsign-conversion, which would flag
+# the deliberate unsigned wrapping arithmetic on every line.
+WARNINGS = -Wall -Wextra -Wshadow
+
 ARCH ?= native
-NVCCFLAGS = -O3 -arch=$(ARCH) -std=c++17 -Iinclude
+NVCCFLAGS = -O3 -arch=$(ARCH) -std=c++17 -Iinclude -Xcompiler=-Wall,-Wextra,-Wshadow
 
 CXX ?= c++
-CXXFLAGS = -O3 -std=c++17 -Iinclude
+CXXFLAGS = -O3 -std=c++17 -Iinclude $(WARNINGS)
 
 COMMON_SRC = src/main.cpp src/parser.cpp
 

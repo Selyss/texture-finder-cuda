@@ -18,6 +18,17 @@ typedef unsigned long uint64_t;
 #endif
 #endif
 
+// Every function here is pure: discarding its result is always a bug, and
+// none of them throw. Metal (MSL) may reject the C++ attributes, so they
+// expand to nothing there.
+#ifdef __METAL_VERSION__
+#define TF_NODISCARD
+#define TF_NOEXCEPT
+#else
+#define TF_NODISCARD [[nodiscard]]
+#define TF_NOEXCEPT noexcept
+#endif
+
 // Reference semantics: 19MisterX98/TextureRotations (texture/*.java) and the
 // vanilla Mth.getSeed position hash. Java overflow wraps; C++ signed overflow
 // is UB, so every wrapping step below is routed through unsigned arithmetic.
@@ -37,7 +48,7 @@ typedef unsigned long uint64_t;
 // coordMix is the full 64-bit mixed value BEFORE the >> 16: most versions
 // consume mix >> 16 (reference getCoordinateRandom), but <=1.12 truncates
 // the full value to int first (reference getCoordinateRandomLegacy).
-TF_HOST_DEVICE inline int64_t coordMixFromParts(uint32_t xTerm, int64_t zTerm, int32_t yTerm)
+TF_NODISCARD TF_HOST_DEVICE inline int64_t coordMixFromParts(uint32_t xTerm, int64_t zTerm, int32_t yTerm) TF_NOEXCEPT
 {
     int64_t l = (int64_t)(int32_t)xTerm ^ zTerm ^ (int64_t)yTerm;
     uint64_t ul = (uint64_t)l;
@@ -45,24 +56,24 @@ TF_HOST_DEVICE inline int64_t coordMixFromParts(uint32_t xTerm, int64_t zTerm, i
     return (int64_t)ul;
 }
 
-TF_HOST_DEVICE inline int64_t coordRandomFromParts(uint32_t xTerm, int64_t zTerm, int32_t yTerm)
+TF_NODISCARD TF_HOST_DEVICE inline int64_t coordRandomFromParts(uint32_t xTerm, int64_t zTerm, int32_t yTerm) TF_NOEXCEPT
 {
     return coordMixFromParts(xTerm, zTerm, yTerm) >> 16;
 }
 
-TF_HOST_DEVICE inline int64_t coordMix(int32_t x, int32_t y, int32_t z)
+TF_NODISCARD TF_HOST_DEVICE inline int64_t coordMix(int32_t x, int32_t y, int32_t z) TF_NOEXCEPT
 {
     return coordMixFromParts((uint32_t)x * 3129871u, (int64_t)z * 116129781LL, y);
 }
 
-TF_HOST_DEVICE inline int64_t coordRandom(int32_t x, int32_t y, int32_t z)
+TF_NODISCARD TF_HOST_DEVICE inline int64_t coordRandom(int32_t x, int32_t y, int32_t z) TF_NOEXCEPT
 {
     return coordMix(x, y, z) >> 16;
 }
 
 // Java Math.abs(rand) % mod, computed in unsigned arithmetic: identical for
 // mod 2 and 4 even at rand == INT_MIN (both yield 0), and never UB.
-TF_HOST_DEVICE inline int absMod(int32_t rand, int mod)
+TF_NODISCARD TF_HOST_DEVICE inline int absMod(int32_t rand, int mod) TF_NOEXCEPT
 {
     uint32_t a = rand < 0 ? 0u - (uint32_t)rand : (uint32_t)rand;
     return (int)(a % (uint32_t)mod);
@@ -74,7 +85,7 @@ TF_HOST_DEVICE inline int absMod(int32_t rand, int mod)
 //       return Math.abs(rand) % mod;
 // The unsigned-negate trick equals Java Math.abs for mod 2 and 4 even at
 // rand == INT_MIN (both yield 0), without the UB of abs(INT_MIN).
-TF_HOST_DEVICE inline int legacyFromCoordRandom(int64_t coordRand, int mod)
+TF_NODISCARD TF_HOST_DEVICE inline int legacyFromCoordRandom(int64_t coordRand, int mod) TF_NOEXCEPT
 {
     constexpr int64_t MULTIPLIER = 0x5DEECE66DLL;
     constexpr int64_t MASK = (1LL << 48) - 1;
@@ -83,7 +94,7 @@ TF_HOST_DEVICE inline int legacyFromCoordRandom(int64_t coordRand, int mod)
     return absMod((int32_t)(uint32_t)(v >> 16), mod);
 }
 
-TF_HOST_DEVICE inline int getTextureLegacy(int32_t x, int32_t y, int32_t z, int mod)
+TF_NODISCARD TF_HOST_DEVICE inline int getTextureLegacy(int32_t x, int32_t y, int32_t z, int mod) TF_NOEXCEPT
 {
     return legacyFromCoordRandom(coordRandom(x, y, z), mod);
 }
@@ -93,20 +104,20 @@ TF_HOST_DEVICE inline int getTextureLegacy(int32_t x, int32_t y, int32_t z, int 
 //       return Math.abs(rand) % mod;
 // No LCG scramble at all in this era. The int64 detour below performs the
 // arithmetic >> 16 with fully defined semantics.
-TF_HOST_DEVICE inline int vanilla12FromMix(int64_t mix, int mod)
+TF_NODISCARD TF_HOST_DEVICE inline int vanilla12FromMix(int64_t mix, int mod) TF_NOEXCEPT
 {
     int32_t truncated = (int32_t)(uint32_t)(uint64_t)mix;
     int32_t rand = (int32_t)((int64_t)truncated >> 16);
     return absMod(rand, mod);
 }
 
-TF_HOST_DEVICE inline int getTextureVanilla12(int32_t x, int32_t y, int32_t z, int mod)
+TF_NODISCARD TF_HOST_DEVICE inline int getTextureVanilla12(int32_t x, int32_t y, int32_t z, int mod) TF_NOEXCEPT
 {
     return vanilla12FromMix(coordMix(x, y, z), mod);
 }
 
 // Java: (z ^ (z >>> 30)) * 0xBF58476D1CE4E5B9; (z ^ (z >>> 27)) * 0x94D049BB133111EB; z ^ (z >>> 31)
-TF_HOST_DEVICE inline uint64_t staffordMix13(uint64_t z)
+TF_NODISCARD TF_HOST_DEVICE inline uint64_t staffordMix13(uint64_t z) TF_NOEXCEPT
 {
     z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
     z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
@@ -118,7 +129,7 @@ TF_HOST_DEVICE inline uint64_t staffordMix13(uint64_t z)
 //       rand = (int)(Long.rotateLeft(mix13(l) + mix13(m), 17) + mix13(l));
 //       return Math.abs(rand) % mod;
 // (-7046029254386353131 as u64 is 0x9E3779B97F4A7C15, the golden ratio.)
-TF_HOST_DEVICE inline int sodium19FromCoordRandom(int64_t coordRand, int mod)
+TF_NODISCARD TF_HOST_DEVICE inline int sodium19FromCoordRandom(int64_t coordRand, int mod) TF_NOEXCEPT
 {
     uint64_t l = (uint64_t)coordRand ^ 0x6A09E667F3BCC909ull;
     uint64_t m = l + 0x9E3779B97F4A7C15ull;
@@ -129,7 +140,7 @@ TF_HOST_DEVICE inline int sodium19FromCoordRandom(int64_t coordRand, int mod)
     return absMod((int32_t)(uint32_t)(rot + l), mod);
 }
 
-TF_HOST_DEVICE inline int getTextureSodium19(int32_t x, int32_t y, int32_t z, int mod)
+TF_NODISCARD TF_HOST_DEVICE inline int getTextureSodium19(int32_t x, int32_t y, int32_t z, int mod) TF_NOEXCEPT
 {
     return sodium19FromCoordRandom(coordRandom(x, y, z), mod);
 }
@@ -138,7 +149,7 @@ TF_HOST_DEVICE inline int getTextureSodium19(int32_t x, int32_t y, int32_t z, in
 // Java: murmur-style avalanche of the seed, then
 //       rand1 = mix13(seed += PHI); rand2 = mix13(seed + PHI);
 //       rand = (int)(rand1 + rand2); return Math.abs(rand) % mod;
-TF_HOST_DEVICE inline int sodiumFromCoordRandom(int64_t coordRand, int mod)
+TF_NODISCARD TF_HOST_DEVICE inline int sodiumFromCoordRandom(int64_t coordRand, int mod) TF_NOEXCEPT
 {
     uint64_t s = (uint64_t)coordRand;
     s ^= s >> 33;
@@ -152,7 +163,7 @@ TF_HOST_DEVICE inline int sodiumFromCoordRandom(int64_t coordRand, int mod)
     return absMod((int32_t)(uint32_t)(rand1 + rand2), mod);
 }
 
-TF_HOST_DEVICE inline int getTextureSodium(int32_t x, int32_t y, int32_t z, int mod)
+TF_NODISCARD TF_HOST_DEVICE inline int getTextureSodium(int32_t x, int32_t y, int32_t z, int mod) TF_NOEXCEPT
 {
     return sodiumFromCoordRandom(coordRandom(x, y, z), mod);
 }
@@ -166,7 +177,7 @@ TF_HOST_DEVICE inline int getTextureSodium(int32_t x, int32_t y, int32_t z, int 
 // parity of that roll, hence the hardcoded 4 with % mod applied after. Using
 // nextInt(2)-style (mod * next) >> 31 for sides is WRONG - it draws a number
 // the game never draws.
-TF_HOST_DEVICE inline int modernFromCoordRandom(int64_t coordRand, int mod)
+TF_NODISCARD TF_HOST_DEVICE inline int modernFromCoordRandom(int64_t coordRand, int mod) TF_NOEXCEPT
 {
     constexpr int64_t MULTIPLIER = 0x5DEECE66DLL;
     constexpr int64_t MASK = (1LL << 48) - 1;
@@ -180,7 +191,7 @@ TF_HOST_DEVICE inline int modernFromCoordRandom(int64_t coordRand, int mod)
     return (int)(((4ull * next) >> 31) % (unsigned int)mod);
 }
 
-TF_HOST_DEVICE inline int getTextureModern(int32_t x, int32_t y, int32_t z, int mod)
+TF_NODISCARD TF_HOST_DEVICE inline int getTextureModern(int32_t x, int32_t y, int32_t z, int mod) TF_NOEXCEPT
 {
     return modernFromCoordRandom(coordRandom(x, y, z), mod);
 }
@@ -189,7 +200,7 @@ TF_HOST_DEVICE inline int getTextureModern(int32_t x, int32_t y, int32_t z, int 
 // and the CPU backend; the GPU kernels dispatch at compile time instead).
 // 0 = modern (1.21.2+), 1 = legacy (1.13-1.21.1), 2 = vanilla <=1.12.2,
 // 3 = Sodium 1.16-1.18.2, 4 = Sodium 1.19-1.19.3.
-TF_HOST_DEVICE inline int getTextureForVersion(int version, int32_t x, int32_t y, int32_t z, int mod)
+TF_NODISCARD TF_HOST_DEVICE inline int getTextureForVersion(int version, int32_t x, int32_t y, int32_t z, int mod) TF_NOEXCEPT
 {
     switch (version)
     {
