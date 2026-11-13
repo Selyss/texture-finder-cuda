@@ -1436,3 +1436,64 @@ The CLI still uses the original packing.
 | `include/cuda_bitplanes.cuh` | `ff99d56b1b94d62f33efb17a64634c4a262e962a4d2429a3b823c270510246a7` |
 | `experiments/rng-reduction/flat_cuda.cu` | `6488495a96a4c8fb163dd292d9eb68328aaf4411ae4b74f0ea402c9fbc8fc2bd` |
 | `src/kernel.cu` | `c886f516c822c130b48fd388759200b9f5f819a2658d31c78adf015cc3100a40` |
+
+### 32-bit packing in the opt-in CUDA CLI (Vulcan job 2327914)
+
+Job `2327914` completed in 51 s with exit code `0:0` on
+`rack04-02`, using one L40S, driver 595.112.07 and CUDA 12.9.86
+targeting `sm_89`. Both builds used stride 5 and the same CLI
+options. The new build uses 32-bit packing for both independent
+and shared fields. Each variant warmed up before nine alternating
+pairs per workload. Both variants used bitplanes and returned the
+standard kernel's exact results in every run. All 12 unit tests
+and the opt-in CUDA end-to-end suite passed.
+
+The narrow synthetic search used 15 candidate x positions and
+a 16-position field width. Times below are seconds.
+
+| Workload | Pair | Original GPU | Packed GPU | Original command wall | Packed command wall |
+|---|---:|---:|---:|---:|---:|
+| one | 1 | 0.06760850 | 0.06341520 | 0.28815963 | 0.27825208 |
+| one | 2 | 0.06736460 | 0.06255160 | 0.31122229 | 0.31157057 |
+| one | 3 | 0.06523170 | 0.06408130 | 0.32025468 | 0.30750786 |
+| one | 4 | 0.06523520 | 0.06150590 | 0.28600999 | 0.32392363 |
+| one | 5 | 0.06744410 | 0.06394970 | 0.36833755 | 0.34457142 |
+| one | 6 | 0.06542830 | 0.06408470 | 0.31600498 | 0.26614048 |
+| one | 7 | 0.06775960 | 0.06455010 | 0.32461192 | 0.30046353 |
+| one | 8 | 0.06774600 | 0.06356420 | 0.32440099 | 0.27172273 |
+| one | 9 | 0.06528410 | 0.06156150 | 0.26963691 | 0.34921611 |
+| all | 1 | 0.18393500 | 0.17782600 | 0.45473356 | 0.46636447 |
+| all | 2 | 0.18268400 | 0.18061800 | 0.42442866 | 0.39473750 |
+| all | 3 | 0.18315300 | 0.18128500 | 0.40514053 | 0.43140617 |
+| all | 4 | 0.18488900 | 0.18139700 | 0.40308471 | 0.43681154 |
+| all | 5 | 0.18160900 | 0.17929700 | 0.40642563 | 0.44280678 |
+| all | 6 | 0.18408200 | 0.17962800 | 0.39770625 | 0.41264501 |
+| all | 7 | 0.18298000 | 0.17933300 | 0.44953208 | 0.41704018 |
+| all | 8 | 0.18107800 | 0.18348800 | 0.39048001 | 0.45351359 |
+| all | 9 | 0.18243300 | 0.17721400 | 0.45136201 | 0.39066085 |
+| narrow | 1 | 0.00050051 | 0.00050995 | 0.26203111 | 0.19510098 |
+| narrow | 2 | 0.00051101 | 0.00106346 | 0.20629236 | 0.24340752 |
+| narrow | 3 | 0.00051299 | 0.00051421 | 0.20666104 | 0.26360877 |
+| narrow | 4 | 0.00049942 | 0.00050762 | 0.20551112 | 0.19650735 |
+| narrow | 5 | 0.00049955 | 0.00050381 | 0.22571771 | 0.19607890 |
+| narrow | 6 | 0.00048858 | 0.00051459 | 0.19697191 | 0.25735784 |
+| narrow | 7 | 0.00052227 | 0.00051264 | 0.25877169 | 0.19842438 |
+| narrow | 8 | 0.00050640 | 0.00051094 | 0.23476314 | 0.19952834 |
+| narrow | 9 | 0.00049421 | 0.00134726 | 0.19616039 | 0.27076717 |
+
+| Workload | Original GPU median | Packed GPU median | Original wall median | Packed wall median |
+|---|---:|---:|---:|---:|
+| One direction | 0.06736460 | 0.06356420 | 0.31600498 | 0.30750786 |
+| All directions | 0.18298000 | 0.17962800 | 0.40642563 | 0.43140617 |
+| Narrow | 0.00050051 | 0.00051264 | 0.20666104 | 0.19952834 |
+
+GPU time fell by 3.80 ms for one direction and 3.35 ms for all
+directions. The narrow GPU median increased by 12 microseconds.
+Whole-command timing ranges overlapped in all three workloads.
+The all-direction wall median increased in these samples.
+
+| Source | SHA-256 |
+|---|---|
+| `src/kernel.cu` before | `c886f516c822c130b48fd388759200b9f5f819a2658d31c78adf015cc3100a40` |
+| `src/kernel.cu` after | `8c17d2e644395825ae025a2fd8c0f3899195715b785591516fd0184a07907a88` |
+| `include/cuda_bitplanes.cuh` | `ff99d56b1b94d62f33efb17a64634c4a262e962a4d2429a3b823c270510246a7` |

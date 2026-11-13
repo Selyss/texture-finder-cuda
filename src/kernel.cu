@@ -400,7 +400,7 @@ std::optional<std::vector<DirectionResult>> tryBitplanes(
         const size_t words = wordsPerZ * hashedRows;
         if (words)
         {
-            fillPlanes<true><<<(words + THREADS - 1) / THREADS, THREADS>>>(layout, deviceY, words, planes);
+            fillPlanes<true, true><<<(words + THREADS - 1) / THREADS, THREADS>>>(layout, deviceY, words, planes);
             CUDA_CHECK(cudaGetLastError());
         }
         for (auto &direction : directions)
