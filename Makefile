@@ -94,3 +94,8 @@ clean:
 	rm -rf build
 
 .PHONY: all windows test tools clean
+
+# Standalone fixed-stride CUDA bitplane experiment.
+build/flat_cuda: experiments/rng-reduction/flat_cuda.cu src/kernel.cu src/parser.cpp include/*.cuh
+	@mkdir -p build
+	$(NVCC) $(NVCCFLAGS) -Xcompiler=-pthread $< src/kernel.cu src/parser.cpp -o $@

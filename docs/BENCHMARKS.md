@@ -171,3 +171,140 @@ as-shipped Java reference running on the dual-EPYC server, and even the
 portable CPU backend on the laptop beats it by ~2.6×. The 3090:M4-GPU gap
 (~10×) is larger than raw specs suggest because the position hash is
 64-bit-integer-multiply-heavy, which Apple GPUs emulate with 32-bit ops.
+
+## Narval A100 baseline (2026-11-12)
+
+Reference workload W on one NVIDIA A100-SXM4-40GB, using CUDA 12.9.86 and
+driver 580.178.04. Slurm job `9193191` used revision `bbef439` and passed
+`make test` and the full `test/e2e.sh` before the benchmark.
+
+| Implementation | Config | Modern kernel, best of 3 after warmup | Legacy kernel, single run |
+|---|---|---:|---:|
+| CUDA warp-compacted scan | 256 threads, 1024 candidates per lane | 0.681369 s | 0.671620 s |
+
+See the [experiment ledger](EXPERIMENTS.md#7-narval-a100-baseline-and-launch-sweep-2026-11-12)
+for the full launch sweep and Nsight Compute outcome.
+
+The repeat job `9194685` measured nine unprofiled samples per mode after
+warmup on a second A100-SXM4-40GB node with the same driver and default
+binary.
+
+| Mode | Median kernel time | Min–max |
+|---|---:|---:|
+| Modern | 0.681581 s | 0.681524–0.681761 s |
+| Legacy | 0.671745 s | 0.671485–0.671987 s |
+
+The [repeat log summary](EXPERIMENTS.md#repeat-timings-and-cuda-timeline-job-9194685)
+includes every sample and the separate Nsight Systems measurements.
+
+### Comparing future CUDA changes
+
+Build the baseline and candidate with the same toolchain and target GPU.
+After the correctness suite passes, warm up both binaries and alternate
+their run order on the same allocated GPU. Keep the individual timings and
+report the median and range for each build. For a multi-pass search, include
+field construction, filtering, and survivor verification in the total GPU
+time. Record whole-program wall time separately.
+
+Collect profiler data in a separate run so replay and tracing overhead stay
+out of the benchmark. Record the profiler settings and any collection
+failure alongside the timings.
+
+### Opt-in CUDA bitplane CLI (Narval job 9229800)
+
+The modern reference workload used the same CUDA binary and A100-SXM4-40GB
+for nine alternating pairs. Both modes returned the same match. Whole-command
+wall time includes CUDA startup and process exit.
+
+| Metric | Standard median (min–max) | Bitplanes median (min–max) | Ratio of medians |
+|---|---:|---:|---:|
+| GPU search | 0.681391 s (0.681347–0.681420) | 0.157418 s (0.157330–0.158262) | 4.33× |
+| Whole-command wall | 1.322511 s (1.213059–1.390604) | 0.812208 s (0.666937–0.902906) | 1.63× |
+
+See the [individual samples and correctness checks](EXPERIMENTS.md#opt-in-cli-search-job-9229800).
+
+### Bitplane stride comparison (Narval job 9230586)
+
+Nine paired runs of the modern reference workload on one A100-SXM4-40GB
+returned the same match as the standard kernel in both stride builds.
+
+| Stride | GPU median (min–max) | Whole-command median (min–max) |
+|---:|---:|---:|
+| 5 | 0.155613 s (0.155599–0.156309) | 0.726339 s (0.652947–0.909123) |
+| 6 | 0.157378 s (0.157362–0.158101) | 0.773668 s (0.655754–0.993884) |
+
+See the [individual samples and slab breakdown](EXPERIMENTS.md#compact-world-y-stride-comparison-job-9230586).
+
+### Standalone precomputed plane offsets (Narval job 9234752)
+
+Nine paired runs per stride on one A100-SXM4-40GB measured the modern
+reference workload. The new search included building and uploading
+the offset table for each slab. Every timed search returned the same
+single match as the standard kernel.
+
+| Stride | Filter median, old → precomputed | Whole-search median, old → precomputed |
+|---:|---:|---:|
+| 5 | 75.61 → 50.80 ms | 157.04 → 139.98 ms |
+| 6 | 63.98 → 45.00 ms | 158.47 → 145.19 ms |
+
+These timings come from the standalone process with CUDA already
+initialized. See the [experiment ledger](EXPERIMENTS.md#precomputed-filter-plane-offsets-job-9234752)
+for paired samples and correctness checks.
+
+### CUDA CLI with precomputed plane offsets (Narval job 9235600)
+
+Nine alternating runs per build on one A100-SXM4-40GB compared the
+stride 6 bitplane CLI before and after precomputing plane offsets.
+Every run returned the standard kernel's exact match.
+
+| Metric | Before median (min–max) | After median (min–max) |
+|---|---:|---:|
+| GPU search | 0.157441 s (0.157338–0.157984) | 0.144279 s (0.144154–0.144388) |
+| Whole command | 0.859525 s (0.839256–0.996671) | 0.850069 s (0.826126–0.926646) |
+
+See the [individual samples and correctness checks](EXPERIMENTS.md#precomputed-plane-offsets-in-the-cuda-cli-job-9235600).
+
+### CUDA CLI stride comparison with precomputed offsets (Narval job 9294135)
+
+Both stride builds returned the exact standard-kernel results
+across six workloads on one A100-SXM4-40GB. Times are medians.
+
+| Reference workload | Standard GPU | Stride 5 GPU | Stride 6 GPU | Standard wall | Stride 5 wall | Stride 6 wall |
+|---|---:|---:|---:|---:|---:|---:|
+| One direction | 0.681708 s | 0.138342 s | 0.144190 s | 1.287659 s | 0.776567 s | 0.793810 s |
+| All four directions | 2.725520 s | 0.553513 s | 1.650640 s | 3.393040 s | 1.209972 s | 2.307458 s |
+
+Stride 5 used bitplanes throughout the reference runs. Stride 6
+fell back in all five four-direction runs. See the
+[full workload results and individual samples](EXPERIMENTS.md#cuda-cli-stride-coverage-job-9294135).
+
+Stride 5 was adopted for the opt-in CUDA path after the
+[Narval regression run](EXPERIMENTS.md#stride-5-default-for-the-opt-in-cuda-path-job-9296853)
+passed the end-to-end, fallback and checkpoint checks.
+
+### CUDA stride 5 on Vulcan L40S (job 2323961)
+
+The standard and opt-in paths returned the same exact match sets
+across the six workloads used on Narval. The reference medians were:
+
+| Reference workload | Standard GPU | Bitplanes GPU | GPU speedup | Standard wall | Bitplanes wall | Wall speedup |
+|---|---:|---:|---:|---:|---:|---:|
+| One direction | 0.319646 s | 0.066798 s | 4.79× | 0.534496 s | 0.296127 s | 1.80× |
+| All four directions | 1.314350 s | 0.277621 s | 4.73× | 1.541722 s | 0.511047 s | 3.02× |
+
+See the [full workload results and individual samples](EXPERIMENTS.md#vulcan-l40s-validation-job-2323961).
+
+### Shared bitplane field prototype on Vulcan L40S (job 2323980)
+
+The standalone four-direction search reduced median GPU time from
+285.877 to 188.613 ms and median search wall time from 312.932
+to 202.999 ms. The match set was exact in every direction. See the
+[full samples and memory measurements](EXPERIMENTS.md#shared-bitplane-field-across-four-directions-vulcan-job-2323980).
+
+### Shared bitplanes in the CUDA CLI on Vulcan L40S (job 2327586)
+
+The four-direction reference search with opt-in stride 5 bitplanes
+went from 275.4 to 179.3 ms of median GPU time (1.54×) and from
+531.7 to 394.0 ms of median whole-command time (1.35×). All nine
+paired runs matched the standard kernel exactly. See the
+[individual samples and validation](EXPERIMENTS.md#shared-bitplanes-in-the-cuda-cli-vulcan-job-2327586).

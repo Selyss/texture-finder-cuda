@@ -43,3 +43,20 @@ std::vector<MatchResult> runSearch(const SearchBounds &bounds,
                                    float *kernelMs = nullptr,
                                    bool *truncated = nullptr,
                                    unsigned long long *totalMatches = nullptr);
+
+struct SearchFormation
+{
+    std::vector<BlockInfo> tops, sides;
+};
+
+struct DirectionResult
+{
+    std::vector<MatchResult> matches;
+    unsigned long long total = 0;
+    bool truncated = false;
+};
+
+bool sharedSearchEnabled(int version);
+std::vector<DirectionResult> runSharedSearch(const SearchBounds &bounds,
+                                             const std::vector<SearchFormation> &formations,
+                                             int version, double &kernelSec);

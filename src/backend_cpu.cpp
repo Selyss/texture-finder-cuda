@@ -166,3 +166,21 @@ std::vector<MatchResult> runSearch(const SearchBounds &bounds,
               { return a.x != b.x ? a.x < b.x : (a.y != b.y ? a.y < b.y : a.z < b.z); });
     return S.results;
 }
+
+bool sharedSearchEnabled(int) { return false; }
+
+std::vector<DirectionResult> runSharedSearch(const SearchBounds &bounds,
+                                             const std::vector<SearchFormation> &formations,
+                                             int version, double &kernelSec)
+{
+    std::vector<DirectionResult> results(formations.size());
+    for (size_t i = 0; i < formations.size(); ++i)
+    {
+        float ms = 0;
+        auto &result = results[i];
+        result.matches = runSearch(bounds, formations[i].tops, formations[i].sides,
+                                   version, &ms, &result.truncated, &result.total);
+        kernelSec += ms / 1000.0;
+    }
+    return results;
+}

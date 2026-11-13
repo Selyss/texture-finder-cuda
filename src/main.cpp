@@ -101,6 +101,7 @@ struct Checkpoint
     std::string path;
     bool active = false;
     bool resumed = false;
+    bool sliceFirst = false;
     uint64_t signature = 0;
     size_t dirIndex = 0;
     long long nextZ = 0;
@@ -113,7 +114,7 @@ struct Checkpoint
         const std::string tmp = path + ".tmp";
         {
             std::ofstream f(tmp, std::ios::trunc);
-            f << "tfcp1 " << std::hex << signature << std::dec << " " << dirIndex << " "
+            f << (sliceFirst ? "tfcp2 " : "tfcp1 ") << std::hex << signature << std::dec << " " << dirIndex << " "
               << nextZ << " " << acc.totalMatches << " " << acc.listed << " "
               << acc.kernelSec << " " << (acc.truncated ? 1 : 0) << "\n";
         }
@@ -137,12 +138,13 @@ struct Checkpoint
         int trunc = 0;
         f >> magic >> std::hex >> sig >> std::dec >> dirIndex >> nextZ >>
             acc.totalMatches >> acc.listed >> acc.kernelSec >> trunc;
-        if (!f || magic != "tfcp1")
+        if (!f || (magic != "tfcp1" && magic != "tfcp2"))
             throw std::runtime_error("checkpoint file is corrupt: " + path);
         if (sig != signature)
             throw std::runtime_error(
                 "checkpoint file belongs to a different search (bounds/version/"
                 "direction/formation changed): " + path + " - delete it to start over");
+        sliceFirst = magic == "tfcp2";
         acc.truncated = trunc != 0;
         resumed = true;
         return true;
@@ -325,6 +327,7 @@ int main(int argc, char *argv[])
     }
 
     Checkpoint ckpt;
+    ckpt.sliceFirst = allMode && sharedSearchEnabled(version);
     ckpt.nextZ = bounds.z_min; // progress baseline even when no checkpoint is used
     if (!checkpointPath.empty())
     {
@@ -343,8 +346,13 @@ int main(int argc, char *argv[])
         try
         {
             if (ckpt.load())
+            {
+                if (ckpt.sliceFirst && (!allMode || ckpt.dirIndex != 0 ||
+                    ckpt.nextZ < bounds.z_min || ckpt.nextZ > static_cast<long long>(bounds.z_max) + 1))
+                    throw std::runtime_error("invalid slice-first checkpoint: " + ckpt.path);
                 std::cout << "Resuming from checkpoint: direction index " << ckpt.dirIndex
                           << ", z = " << ckpt.nextZ << std::endl;
+            }
         }
         catch (const std::exception &e)
         {
@@ -368,7 +376,8 @@ int main(int argc, char *argv[])
     if (sliced)
         progress.begin(volumePerDir * directions.size(),
                        (unsigned long long)ckpt.dirIndex * volumePerDir +
-                           (unsigned long long)((long long)ckpt.nextZ - bounds.z_min) * rowsPerZ);
+                           (unsigned long long)((long long)ckpt.nextZ - bounds.z_min) * rowsPerZ *
+                               (ckpt.sliceFirst ? directions.size() : 1));
 
     // Adaptive slice sizing: aim for TARGET_SLICE_SECONDS per slice based on
     // the measured rate of the previous slice.
@@ -381,97 +390,130 @@ int main(int argc, char *argv[])
     };
     std::vector<Found> collected;
 
-    for (size_t di = ckpt.dirIndex; di < directions.size(); di++)
-    {
-        const int dir = directions[di];
-        std::vector<BlockInfo> tops = topsAndBottoms, sids = sides;
-        for (int r = 0; r < dir; r++)
+    const auto rotate = [&](int dir) {
+        SearchFormation rotated{topsAndBottoms, sides};
+        for (int r = 0; r < dir; ++r)
         {
-            for (auto &b : tops)
+            for (auto &b : rotated.tops)
                 rotateFormation(b);
-            for (auto &b : sids)
+            for (auto &b : rotated.sides)
                 rotateFormation(b);
         }
+        return rotated;
+    };
+    const auto accept = [&](const DirectionResult &result, int dir) {
+        acc.truncated |= result.truncated;
+        acc.totalMatches += result.total;
+        acc.listed += result.matches.size();
+        if (!sliced)
+        {
+            for (const auto &match : result.matches)
+                collected.push_back({match, dir});
+        }
+        else if (!result.matches.empty())
+        {
+            progress.clearLine();
+            for (const auto &match : result.matches)
+                printMatch(match, dir, allMode);
+            std::cout.flush();
+        }
+    };
+    const auto sliceEnd = [&](long long z, unsigned long long positionsPerRow) {
+        const auto target = rateEMA > 0 ? static_cast<unsigned long long>(rateEMA * TARGET_SLICE_SECONDS)
+                                        : FIRST_SLICE_POSITIONS;
+        const auto rows = std::max(1ull, target / positionsPerRow);
+        return rows <= static_cast<unsigned long long>(bounds.z_max - z)
+            ? z + static_cast<long long>(rows) - 1 : bounds.z_max;
+    };
+    const auto recordSlice = [&](unsigned long long positions, double seconds,
+                                 size_t dir, long long nextZ, bool workRemains) {
+        acc.kernelSec += seconds;
+        if (seconds > 0)
+        {
+            const double rate = static_cast<double>(positions) / seconds;
+            rateEMA = rateEMA > 0 ? 0.5 * rateEMA + 0.5 * rate : rate;
+        }
+        progress.update(positions);
+        ckpt.dirIndex = dir;
+        ckpt.nextZ = nextZ;
+        ckpt.acc = acc;
+        ckpt.save();
+
+        ++slicesDone;
+        if (maxSlices < 0 || slicesDone < maxSlices || !workRemains)
+            return false;
+        progress.end();
+        std::cout << "Stopping after " << slicesDone << " slice(s) (TF_MAX_SLICES)";
+        if (ckpt.active)
+            std::cout << "; state saved to " << ckpt.path;
+        std::cout << std::endl;
+        return true;
+    };
+
+    if (ckpt.sliceFirst)
+    {
+        std::vector<SearchFormation> formations;
+        for (int dir : directions)
+            formations.push_back(rotate(dir));
+        const auto positionsPerRow = rowsPerZ * directions.size();
+        for (long long z = ckpt.nextZ; z <= bounds.z_max;)
+        {
+            SearchBounds slice = bounds;
+            const auto end = sliced ? sliceEnd(z, positionsPerRow) : bounds.z_max;
+            slice.z_min = static_cast<int>(z);
+            slice.z_max = static_cast<int>(end);
+            double seconds = 0;
+            const auto results = runSharedSearch(slice, formations, version, seconds);
+            for (size_t di = 0; di < results.size(); ++di)
+                accept(results[di], directions[di]);
+            if (sliced)
+            {
+                if (recordSlice((end - z + 1) * positionsPerRow, seconds, 0,
+                                end + 1, end < bounds.z_max))
+                    return 3;
+            }
+            else
+                acc.kernelSec += seconds;
+            z = end + 1;
+        }
+    }
+
+    for (size_t di = ckpt.dirIndex; !ckpt.sliceFirst && di < directions.size(); ++di)
+    {
+        const int dir = directions[di];
+        const auto rotated = rotate(dir);
+        const auto &tops = rotated.tops;
+        const auto &sids = rotated.sides;
 
         if (!sliced)
         {
-            float kernelMs = 0.f;
-            bool truncated = false;
-            unsigned long long dirTotal = 0;
-            std::vector<MatchResult> matches =
-                runSearch(bounds, tops, sids, version, &kernelMs, &truncated, &dirTotal);
+            float kernelMs = 0;
+            DirectionResult result;
+            result.matches = runSearch(bounds, tops, sids, version, &kernelMs,
+                                       &result.truncated, &result.total);
             acc.kernelSec += kernelMs / 1000.0;
-            acc.truncated |= truncated;
-            acc.totalMatches += dirTotal;
-            acc.listed += matches.size();
-            for (const auto &m : matches)
-                collected.push_back({m, dir});
+            accept(result, dir);
             continue;
         }
 
         long long z = (di == ckpt.dirIndex && ckpt.resumed) ? ckpt.nextZ : bounds.z_min;
         while (z <= bounds.z_max)
         {
-            const unsigned long long targetPositions =
-                rateEMA > 0 ? (unsigned long long)(rateEMA * TARGET_SLICE_SECONDS)
-                            : FIRST_SLICE_POSITIONS;
-            unsigned long long sliceZ = targetPositions / (rowsPerZ ? rowsPerZ : 1);
-            if (sliceZ < 1)
-                sliceZ = 1;
-            const long long zEnd =
-                (unsigned long long)(bounds.z_max - z) >= sliceZ ? z + (long long)sliceZ - 1
-                                                                 : bounds.z_max;
-
+            const auto end = sliceEnd(z, rowsPerZ);
             SearchBounds sub = bounds;
-            sub.z_min = (int)z;
-            sub.z_max = (int)zEnd;
+            sub.z_min = static_cast<int>(z);
+            sub.z_max = static_cast<int>(end);
+            float kernelMs = 0;
+            DirectionResult result;
+            result.matches = runSearch(sub, tops, sids, version, &kernelMs,
+                                       &result.truncated, &result.total);
+            accept(result, dir);
 
-            float kernelMs = 0.f;
-            bool truncated = false;
-            unsigned long long dirTotal = 0;
-            std::vector<MatchResult> matches =
-                runSearch(sub, tops, sids, version, &kernelMs, &truncated, &dirTotal);
-
-            acc.kernelSec += kernelMs / 1000.0;
-            acc.truncated |= truncated;
-            acc.totalMatches += dirTotal;
-            acc.listed += matches.size();
-
-            if (!matches.empty())
-            {
-                progress.clearLine();
-                for (const auto &m : matches)
-                    printMatch(m, dir, allMode);
-                std::cout.flush();
-            }
-
-            const unsigned long long slicePositions =
-                (unsigned long long)(zEnd - z + 1) * rowsPerZ;
-            const double sliceSec = kernelMs / 1000.0;
-            if (sliceSec > 0)
-            {
-                const double rate = (double)slicePositions / sliceSec;
-                rateEMA = rateEMA > 0 ? 0.5 * rateEMA + 0.5 * rate : rate;
-            }
-            progress.update(slicePositions);
-
-            z = zEnd + 1;
-            ckpt.dirIndex = di;
-            ckpt.nextZ = z;
-            ckpt.acc = acc;
-            ckpt.save();
-
-            slicesDone++;
-            const bool workRemains = z <= bounds.z_max || di + 1 < directions.size();
-            if (maxSlices >= 0 && slicesDone >= maxSlices && workRemains)
-            {
-                progress.end();
-                std::cout << "Stopping after " << slicesDone << " slice(s) (TF_MAX_SLICES)";
-                if (ckpt.active)
-                    std::cout << "; state saved to " << ckpt.path;
-                std::cout << std::endl;
+            const auto positions = static_cast<unsigned long long>(end - z + 1) * rowsPerZ;
+            z = end + 1;
+            if (recordSlice(positions, kernelMs / 1000.0, di, z,
+                            z <= bounds.z_max || di + 1 < directions.size()))
                 return 3;
-            }
         }
         ckpt.dirIndex = di + 1;
         ckpt.nextZ = bounds.z_min;
