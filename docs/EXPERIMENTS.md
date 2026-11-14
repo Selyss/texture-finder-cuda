@@ -1497,3 +1497,145 @@ The all-direction wall median increased in these samples.
 | `src/kernel.cu` before | `c886f516c822c130b48fd388759200b9f5f819a2658d31c78adf015cc3100a40` |
 | `src/kernel.cu` after | `8c17d2e644395825ae025a2fd8c0f3899195715b785591516fd0184a07907a88` |
 | `include/cuda_bitplanes.cuh` | `ff99d56b1b94d62f33efb17a64634c4a262e962a4d2429a3b823c270510246a7` |
+
+### CUDA command startup and teardown on Vulcan (job 2328111)
+
+Vulcan job `2328111` completed in 21 s on `rack02-15` with exit
+code `0:0`. It used one L40S, driver 595.112.07, CUDA 12.9.86
+and an `sm_89` build. Temporary instrumentation logged monotonic
+timestamps to stderr. The parent timed each command from just
+before spawning through output collection and process exit.
+After warmup, nine alternating traced and untraced pairs ran
+for each workload. Both used the opt-in CUDA bitplane path and
+returned the exact standard-kernel results. The reference used
+one direction. The tiny workload had 855 candidates and a
+synthetic ten-block top-face formation.
+
+| Median interval (ms) | Reference | Tiny |
+|---|---:|---:|
+| Parent launch to main entry | 3.943 | 3.926 |
+| Main entry to first CUDA call | 0.297 | 0.255 |
+| First CUDA call, cudaMemGetInfo | 156.788 | 144.737 |
+| First CUDA return to allocations ready | 0.315 | 0.240 |
+| Allocations ready to first fill launch enqueued | 0.389 | 0.389 |
+| First fill launch enqueued to last result copy | 64.412 | 0.064 |
+| Last result copy to buffer release | 0.756 | 0.373 |
+| Buffer release to end of main | 0.041 | 0.032 |
+| End of main to parent return | 62.161 | 57.573 |
+| Traced CUDA event time | 63.854 | 0.409 |
+| Traced whole command | 325.164 | 207.683 |
+| Untraced CUDA event time | 64.050 | 0.407 |
+| Untraced whole command | 320.807 | 205.505 |
+
+The launch marker follows the asynchronous launch call, so CUDA event
+time can include work before that marker. The search interval includes
+all remaining slices and the last result copy. The final interval
+includes runtime shutdown, OS process exit and parent collection.
+The run did not isolate those costs. Interval medians are calculated
+independently and can differ from a sum of medians. Reusing one
+process may amortize the first CUDA call and final exit. This run
+did not measure repeated searches in one process.
+
+Traced samples contain all columns. Untraced rows contain GPU and
+wall time after the first three columns.
+
+```csv
+workload,sample,trace,launch_main,main_to_cuda,first_cuda_call,allocations,first_launch,search_to_last_copy,last_release_exit,exit_to_parent,gpu,wall,last_copy_to_release
+reference,1,1,3.871489,0.250449,145.315898,0.315234,0.383818,64.402872,0.041350,68.821749,63.853200,284.153834,0.750975
+reference,1,0,63.614000,325.967551
+reference,2,0,63.754200,322.009119
+reference,2,1,3.896918,0.278246,156.787579,0.301604,0.374513,65.164263,0.034403,61.470857,64.608100,289.051892,0.743509
+reference,3,1,3.954023,0.312672,144.612764,0.308635,0.389268,64.412309,0.041900,119.042782,63.862800,338.090422,5.016069
+reference,3,0,61.830400,272.055534
+reference,4,0,65.038700,320.807209
+reference,4,1,3.596981,0.303644,216.691483,0.456808,0.461024,64.186239,0.047874,68.958722,63.404200,355.476993,0.774218
+reference,5,1,4.345033,0.302572,247.531003,0.341621,0.425442,67.989091,0.045075,62.160820,67.411700,383.897375,0.756718
+reference,5,0,63.958800,341.179801
+reference,6,0,64.050300,280.016452
+reference,6,1,3.728812,0.297219,150.797904,0.307186,0.386650,64.396128,0.038937,109.096857,63.854400,332.190456,3.140763
+reference,7,1,4.066872,0.479197,159.134997,0.311696,0.392640,64.642266,0.042580,61.850823,64.106400,291.664507,0.743436
+reference,7,0,65.790300,295.567020
+reference,8,0,64.312100,276.351836
+reference,8,1,3.942500,0.256026,186.613814,3.621105,1.105453,67.533791,0.041442,61.319098,62.521800,325.163535,0.730306
+reference,9,1,3.962295,0.289313,144.855669,0.317393,0.381457,63.738388,0.039537,61.355298,63.189400,275.695374,0.756024
+reference,9,0,64.104600,357.935516
+tiny,1,1,3.638687,0.239789,142.302156,0.241017,0.385421,0.063508,0.027732,58.370849,0.406720,205.642421,0.373262
+tiny,1,0,0.402720,260.863425
+tiny,2,0,0.403552,204.109571
+tiny,2,1,3.926477,0.281994,165.506686,0.234224,1.746558,0.065984,0.033014,82.934072,1.767490,257.830706,3.101697
+tiny,3,1,3.969979,0.236724,142.876121,0.233391,0.383698,0.061970,0.029246,57.327514,0.404480,205.499803,0.381160
+tiny,3,0,0.401312,209.196781
+tiny,4,0,0.402368,270.778988
+tiny,4,1,4.053273,0.294348,144.671021,0.232836,0.389780,0.063387,0.032846,57.572657,0.408992,207.682885,0.372737
+tiny,5,1,4.003274,0.262843,145.446129,3.784607,0.474093,0.063815,0.027871,114.077748,0.492736,270.571449,2.431069
+tiny,5,0,0.410944,204.807463
+tiny,6,0,0.414560,202.042666
+tiny,6,1,3.837324,0.258235,215.144126,0.242753,0.396487,0.064750,0.032174,58.025615,0.415840,278.373680,0.372216
+tiny,7,1,3.907487,0.255329,144.736706,0.244583,0.386817,0.063677,0.034266,57.487826,0.405824,207.491203,0.374512
+tiny,7,0,0.413120,290.070359
+tiny,8,0,0.407360,205.504709
+tiny,8,1,3.942102,0.242530,142.302388,0.239966,0.385447,0.063014,0.029367,56.138978,0.407264,203.715221,0.371429
+tiny,9,1,3.728034,0.243470,206.706043,0.232508,0.389240,0.063366,0.033043,56.770098,0.408736,268.537107,0.371305
+tiny,9,0,0.421152,204.305594
+```
+
+| Temporary source | SHA-256 |
+|---|---|
+| `src/main.cpp` | `3c0f664773757979b87af873a30fd9d70a779429f527badcada2317058694429` |
+| `src/kernel.cu` | `37f6ffaae852c3ea6081686f1af839ba3b8551285243e437db3b4802404167f7` |
+| `src/startup-trace.h` | `d5822e2018afa5ddcb02b85cad8d80815d3950078671b56f4b4351692300fde6` |
+| `measure.py` | `8aa04033bd6b7c2b5c8beb80a27f3da0e11730cbe926fe3a4381c91321696cfd` |
+
+### Stand-in fixture for the diagonal lattice (Vulcan job 2328173)
+
+Job `2328173` completed in 368 s with exit code `0:0` on
+`rack01-16`, using one L40S, driver 595.112.07, CUDA 12.9.86 and
+`sm_89`. The standalone harness used the current stride 5
+z-row filter, precomputed offsets, and 32-bit fill packing for
+both fixtures. A private copy of the fixture moved one top block
+from the six-check class to the three-check class. This produced
+the proposed diagonal lattice's multiset of check counts while
+preserving the fill geometry and the reference match. The
+diagonal read pattern was outside the scope of this test.
+
+Synthetic cases and one full slab passed the exact CPU mask
+comparison. The direct CPU count agreed with the GPU for every
+class on the full workload. Both fixtures returned the standard
+kernel's single exact match in all nine alternating timed pairs.
+
+| Fixture | Survivors by class | Total survivors | CPU verify hashes |
+|---|---|---:|---:|
+| Original | 6,099,175 / 24,417,246 / 24,412,805 / 24,406,584 / 390,623,920 | 469,959,730 | 626,619,480 |
+| Stand-in | 24,405,704 / 24,417,246 / 24,412,805 / 24,406,584 / 97,656,605 | 195,298,944 | 260,407,616 |
+
+Times are CUDA event milliseconds. Verification is estimated by
+subtracting the filter-only match kernel from the full match
+kernel. Both fixtures used the same pair of compiled kernels.
+
+| Pair | Original fill | Original filter | Original verify estimate | Original total | Stand-in fill | Stand-in filter | Stand-in verify estimate | Stand-in total |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 31.293631 | 29.145056 | 10.655107 | 71.093796 | 32.022434 | 29.306498 | 8.850882 | 70.179810 |
+| 2 | 31.337921 | 29.232256 | 10.631517 | 71.201691 | 31.657024 | 29.303101 | 8.477093 | 69.437218 |
+| 3 | 31.430464 | 29.126270 | 10.849823 | 71.406555 | 33.477215 | 29.440289 | 10.600483 | 73.517990 |
+| 4 | 33.125084 | 31.550270 | 10.485825 | 75.161179 | 34.236897 | 31.809120 | 8.924572 | 74.970589 |
+| 5 | 33.247555 | 29.848194 | 12.260250 | 75.356003 | 32.126400 | 29.554178 | 8.769819 | 70.450394 |
+| 6 | 31.675806 | 29.574333 | 10.708103 | 71.958244 | 32.170082 | 29.734783 | 8.632706 | 70.537567 |
+| 7 | 31.766466 | 29.316866 | 11.089727 | 72.173058 | 34.129726 | 30.497440 | 10.128254 | 74.755417 |
+| 8 | 32.768990 | 30.475552 | 11.100704 | 74.345245 | 34.180195 | 31.307713 | 9.318336 | 74.806244 |
+| 9 | 32.129025 | 30.158945 | 10.609087 | 72.897057 | 32.463551 | 29.828672 | 8.861090 | 71.153313 |
+| Median | 31.766466 | 29.574333 | 10.708103 | 72.173058 | 32.463551 | 29.734783 | 8.861090 | 71.153313 |
+
+The median paired total saving was 0.91 ms. Verification fell
+from 10.71 to 8.86 ms despite a roughly 58% drop in survivors
+and CPU verification hashes. Measured fill times also varied despite
+identical geometry. The total saving fell below the proposed
+2.5 ms L40S gate, so the diagonal implementation was skipped. The
+result supports a weaker relationship between survivor count and
+verification time on this workload. It does not validate the warp
+step model or measure the diagonal layout itself.
+
+| Source | SHA-256 |
+|---|---|
+| Temporary standalone harness | `bcb8298dcd422b8c1e818e6e7671c25743770a09bbf4a3fab92e54a0489e255d` |
+| `src/kernel.cu` | `8c17d2e644395825ae025a2fd8c0f3899195715b785591516fd0184a07907a88` |
+| `include/cuda_bitplanes.cuh` | `ff99d56b1b94d62f33efb17a64634c4a262e962a4d2429a3b823c270510246a7` |
