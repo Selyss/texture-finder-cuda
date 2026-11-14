@@ -13,9 +13,9 @@
 #include <tuple>
 #include <vector>
 
-#include "blockinfo.cuh"
-#include "rotation.cuh"
-#include "texture.cuh"
+#include "texture/formation.hpp"
+#include "texture/rotation.hpp"
+#include "texture/texture_rules.hpp"
 
 int main(int argc, char *argv[])
 {

@@ -8,7 +8,7 @@
 #include <random>
 #include <tuple>
 #include <vector>
-#include "texture.cuh"
+#include "texture/texture_rules.hpp"
 struct Blk { int dx, dy, dz, expected, mask; uint32_t xTerm; int64_t zTerm; };
 struct Box { int x0, x1, y0, y1, z0, z1; };
 using Match = std::tuple<int, int, int>;

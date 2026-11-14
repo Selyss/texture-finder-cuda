@@ -1,5 +1,5 @@
 // Prototype: y-column forward-difference sweep vs the reference per-candidate scan.
-// Build: see docs/RNG_REDUCTION_LOG.md (needs texture.cuh from correctness-overhaul)
+// Build: see docs/RNG_REDUCTION_LOG.md
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -8,7 +8,7 @@
 #include <random>
 #include <tuple>
 #include <vector>
-#include "texture.cuh"
+#include "texture/texture_rules.hpp"
 
 struct Blk { int dx, dy, dz, expected, mask; uint32_t xTerm; int64_t zTerm; };
 struct Box { int x0, x1, y0, y1, z0, z1; };

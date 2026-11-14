@@ -14,8 +14,8 @@ mkdir -p build
 run_config() { # <label> <defines...>
     local label=$1; shift
     local bin="build/bench_$label"
-    "$NVCC" -O3 -arch=native -std=c++17 -Iinclude "$@" \
-        src/main.cpp src/parser.cpp src/kernel.cu -o "$bin"
+    "$NVCC" -O3 -arch=native -std=c++17 -Isrc "$@" \
+        src/main.cpp src/search/session.cpp src/search/checkpoint.cpp src/texture/formation_io.cpp src/backends/cuda/search.cu -o "$bin"
     # warmup + 3 timed runs, take best kernel time
     "$bin" $WORK 0 "$FORM" 0 >/dev/null
     local best=""

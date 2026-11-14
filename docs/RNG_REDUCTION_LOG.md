@@ -28,8 +28,10 @@ exit).
   ledger of already-tried ideas live. The maths is identical on `main`.
 - This file and the prototypes were written into the working tree on `main`
   (untracked, not committed).
-- Prototypes: `experiments/rng-reduction/`. They include `texture.cuh` from
-  the overhaul branch so they test against the real reference functions:
+- Prototypes live in `experiments/rng-reduction/`. On `rewrite`, pass
+  `-I../../src` when building from that directory to use the shared
+  `src/texture/texture_rules.hpp` implementation. The commands below
+  reproduce the original setup with the headers from `correctness-overhaul`.
 
   ```bash
   cd experiments/rng-reduction

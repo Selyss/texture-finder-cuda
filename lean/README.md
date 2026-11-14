@@ -7,7 +7,7 @@ fails to load with a `__DATA_CONST` error, run `lake build mathlib/cache`, then
 `lake env lean --run .lake/packages/mathlib/Cache/Main.lean get Mathlib.Data.BitVec Mathlib.Tactic.Ring`.
 
 [Rng.lean](TextureFinder/Rng.lean) models the five modes in
-[texture.cuh](../include/texture.cuh) with explicit bit widths.
+[texture_rules.hpp](../src/texture/texture_rules.hpp) with explicit bit widths.
 [Vectors.lean](TextureFinder/Vectors.lean) checks the 62 synthetic constant
 vectors from [test.cpp](../test/test.cpp) and the signed minimum edge case.
 The vector checks are part of `lake build`.

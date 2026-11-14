@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-#include "texture.cuh"
+#include "texture/texture_rules.hpp"
 
 namespace
 {

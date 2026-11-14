@@ -1,17 +1,17 @@
 // Metal compute kernel for the formation search. This file is concatenated
-// AFTER include/texture.cuh into one MSL source string at build time (see
+// AFTER src/texture/texture_rules.hpp into one MSL source string at build time (see
 // the Makefile's build/tf_shader_src.h rule), so getTextureModern /
 // getTextureLegacy here are the very same code every other backend runs.
-// The host side is src/backend_metal.mm, which also injects
+// The host side is src/backends/metal/search.mm, which also injects
 //   #define TF_MAX_MATCHES <MAX_MATCHES>
-// as a prelude and asserts it matches kernel.cuh.
+// as a prelude and asserts it matches search/backend.hpp.
 
 #include <metal_stdlib>
 using namespace metal;
 
 // Selected per-launch like the CUDA template parameter; branches on a
 // function constant are resolved at pipeline-creation time.
-// 0 modern, 1 legacy, 2 vanilla12, 3 sodium, 4 sodium19 (blockinfo.cuh).
+// 0 modern, 1 legacy, 2 vanilla12, 3 sodium, 4 sodium19 (texture/formation.hpp).
 constant int TF_VERSION [[function_constant(0)]];
 
 struct TfParams

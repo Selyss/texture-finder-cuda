@@ -196,7 +196,7 @@ TF_NODISCARD TF_HOST_DEVICE inline int getTextureModern(int32_t x, int32_t y, in
     return modernFromCoordRandom(coordRandom(x, y, z), mod);
 }
 
-// Runtime dispatch over the version constants in blockinfo.cuh (host tools
+// Runtime dispatch over the version constants in formation.hpp (host tools
 // and the CPU backend; the GPU kernels dispatch at compile time instead).
 // 0 = modern (1.21.2+), 1 = legacy (1.13-1.21.1), 2 = vanilla <=1.12.2,
 // 3 = Sodium 1.16-1.18.2, 4 = Sodium 1.19-1.19.3.

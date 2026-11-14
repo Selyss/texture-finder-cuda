@@ -6,7 +6,7 @@ is still right — including when a new Minecraft version changes the RNG.
 Ground truth is the reference Java implementation
 ([19MisterX98/TextureRotations](https://github.com/19MisterX98/TextureRotations));
 all formulas below are literal translations of it, kept in
-[include/texture.cuh](../include/texture.cuh) as the single source shared by
+[src/texture/texture_rules.hpp](../src/texture/texture_rules.hpp) as the single source shared by
 the kernel, the tests, and the tools. Never copy those functions.
 
 ## Position hash (all versions)
@@ -108,7 +108,7 @@ the searcher tries all four orientations and reports which one matched.
 1. Update the reference clone and rerun `test/oracle/regen.sh <workdir>`
    (it refuses to produce dumps if the built-in fixture gate fails).
 2. Run `build/oracle_diff` — it will show exactly where behavior changed.
-3. Add/adjust the corresponding function in `include/texture.cuh` and a
+3. Add/adjust the corresponding function in `src/texture/texture_rules.hpp` and a
    `version` mapping; the old versions keep their dumps and tests.
 4. Re-run the whole pyramid; the real-world fixture must still be found by
    the version it was verified against.
@@ -126,7 +126,7 @@ value = Math.abs(rand) % mod;   // no LCG scramble in this era
 ```
 Note the contrast with 1.13+: there the 64-bit mix is shifted (`mix >> 16`)
 and *then* consumed; here it is truncated to 32 bits first. This is why
-`texture.cuh` exposes `coordMix` separately from `coordRandom`.
+`texture_rules.hpp` exposes `coordMix` separately from `coordRandom`.
 
 **Sodium 1.0-4.1 on MC 1.16-1.18.2 (`version = 3`, reference `SodiumTextures`):**
 murmur-style avalanche of `coordRandom` (xor-shift-33 / multiply twice),

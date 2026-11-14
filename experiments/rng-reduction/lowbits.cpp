@@ -1,6 +1,6 @@
 #include <cstdio>
 #include <random>
-#include "texture.cuh"
+#include "texture/texture_rules.hpp"
 static uint64_t P(uint64_t u){ return u*u*42317861ull + u*11ull; }
 int main(){
   std::mt19937_64 r(7); long n=20000000; long bad[6]={0};

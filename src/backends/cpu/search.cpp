@@ -1,5 +1,5 @@
 // Portable multithreaded CPU backend: same contract as the CUDA kernel,
-// built from the same include/texture.cuh. Threads pull chunks of the
+// built from the same src/texture/texture_rules.hpp. Threads pull chunks of the
 // linearized volume from an atomic cursor (the CPU analog of the GPU's
 // chunk-cursor design) and walk them with the same incremental
 // decompose-once-then-carry scheme.
@@ -11,10 +11,11 @@
 #include <cstdlib>
 #include <mutex>
 #include <thread>
+#include <utility>
 #include <vector>
 
-#include "kernel.cuh"
-#include "texture.cuh"
+#include "search/backend.hpp"
+#include "texture/texture_rules.hpp"
 
 const char *searchBackendName() { return "CPU"; }
 
@@ -101,13 +102,9 @@ void worker(Shared &S)
 
 } // namespace
 
-std::vector<MatchResult> runSearch(const SearchBounds &bounds,
-                                   const std::vector<BlockInfo> &topsAndBottoms,
-                                   const std::vector<BlockInfo> &sides,
-                                   int version,
-                                   float *kernelMs,
-                                   bool *truncated,
-                                   unsigned long long *totalMatches)
+DirectionResult runSearch(const SearchBounds &bounds,
+                          const std::vector<BlockInfo> &topsAndBottoms,
+                          const std::vector<BlockInfo> &sides, int version)
 {
     if (topsAndBottoms.size() > MAX_FORMATION_BLOCKS || sides.size() > MAX_FORMATION_BLOCKS)
     {
@@ -153,34 +150,26 @@ std::vector<MatchResult> runSearch(const SearchBounds &bounds,
         t.join();
 
     const auto t1 = std::chrono::steady_clock::now();
-    if (kernelMs)
-        *kernelMs = std::chrono::duration<float, std::milli>(t1 - t0).count();
+    const auto ms = std::chrono::duration<float, std::milli>(t1 - t0).count();
 
     const unsigned long long count = S.found.load();
-    if (truncated)
-        *truncated = count > MAX_MATCHES;
-    if (totalMatches)
-        *totalMatches = count;
 
     std::sort(S.results.begin(), S.results.end(), [](const MatchResult &a, const MatchResult &b)
               { return a.x != b.x ? a.x < b.x : (a.y != b.y ? a.y < b.y : a.z < b.z); });
-    return S.results;
+    return {std::move(S.results), count, count > MAX_MATCHES, ms};
 }
 
 bool sharedSearchEnabled(int) { return false; }
 
-std::vector<DirectionResult> runSharedSearch(const SearchBounds &bounds,
-                                             const std::vector<SearchFormation> &formations,
-                                             int version, double &kernelSec)
+SharedSearchResult runSharedSearch(const SearchBounds &bounds,
+                                   const std::vector<SearchFormation> &formations, int version)
 {
-    std::vector<DirectionResult> results(formations.size());
+    SharedSearchResult result;
+    result.directions.resize(formations.size());
     for (size_t i = 0; i < formations.size(); ++i)
     {
-        float ms = 0;
-        auto &result = results[i];
-        result.matches = runSearch(bounds, formations[i].tops, formations[i].sides,
-                                   version, &ms, &result.truncated, &result.total);
-        kernelSec += ms / 1000.0;
+        result.directions[i] = runSearch(bounds, formations[i].tops, formations[i].sides, version);
+        result.kernelSeconds += result.directions[i].kernelMs / 1000.0;
     }
-    return results;
+    return result;
 }

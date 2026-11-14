@@ -1,6 +1,6 @@
 // Apple GPU backend via Metal. The compute shader is built at runtime from
 // a source string generated at build time by concatenating
-// include/texture.cuh and src/match.metal (see the Makefile), so the RNG is
+// src/texture/texture_rules.hpp and src/backends/metal/match.metal (see the Makefile), so the RNG is
 // the same single source every other backend compiles. Work is dispatched
 // in z-slices to keep individual command buffers short.
 
@@ -11,9 +11,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <utility>
 #include <vector>
 
-#include "kernel.cuh"
+#include "search/backend.hpp"
 
 const char *searchBackendName() { return "Metal"; }
 
@@ -104,13 +105,9 @@ id<MTLComputePipelineState> ensurePipeline(int version)
 
 } // namespace
 
-std::vector<MatchResult> runSearch(const SearchBounds &bounds,
-                                   const std::vector<BlockInfo> &topsAndBottoms,
-                                   const std::vector<BlockInfo> &sides,
-                                   int version,
-                                   float *kernelMs,
-                                   bool *truncated,
-                                   unsigned long long *totalMatches)
+DirectionResult runSearch(const SearchBounds &bounds,
+                          const std::vector<BlockInfo> &topsAndBottoms,
+                          const std::vector<BlockInfo> &sides, int version)
 {
     if (topsAndBottoms.size() > MAX_FORMATION_BLOCKS || sides.size() > MAX_FORMATION_BLOCKS)
     {
@@ -206,32 +203,22 @@ std::vector<MatchResult> runSearch(const SearchBounds &bounds,
         matches.assign((MatchResult *)bOut.contents, (MatchResult *)bOut.contents + stored);
     }
 
-    if (kernelMs)
-        *kernelMs = ms;
-    if (truncated)
-        *truncated = total > MAX_MATCHES;
-    if (totalMatches)
-        *totalMatches = total;
-
     std::sort(matches.begin(), matches.end(), [](const MatchResult &a, const MatchResult &b)
               { return a.x != b.x ? a.x < b.x : (a.y != b.y ? a.y < b.y : a.z < b.z); });
-    return matches;
+    return {std::move(matches), total, total > MAX_MATCHES, ms};
 }
 
 bool sharedSearchEnabled(int) { return false; }
 
-std::vector<DirectionResult> runSharedSearch(const SearchBounds &bounds,
-                                             const std::vector<SearchFormation> &formations,
-                                             int version, double &kernelSec)
+SharedSearchResult runSharedSearch(const SearchBounds &bounds,
+                                   const std::vector<SearchFormation> &formations, int version)
 {
-    std::vector<DirectionResult> results(formations.size());
+    SharedSearchResult result;
+    result.directions.resize(formations.size());
     for (size_t i = 0; i < formations.size(); ++i)
     {
-        float ms = 0;
-        auto &result = results[i];
-        result.matches = runSearch(bounds, formations[i].tops, formations[i].sides,
-                                   version, &ms, &result.truncated, &result.total);
-        kernelSec += ms / 1000.0;
+        result.directions[i] = runSearch(bounds, formations[i].tops, formations[i].sides, version);
+        result.kernelSeconds += result.directions[i].kernelMs / 1000.0;
     }
-    return results;
+    return result;
 }

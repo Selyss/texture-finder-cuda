@@ -17,12 +17,13 @@
 #include <string_view>
 #include <tuple>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
-#include "cuda_bitplanes.cuh"
-#include "parser.cuh"
-#include "rotation.cuh"
-#include "texture.cuh"
+#include "backends/cuda/bitplanes.cuh"
+#include "texture/formation_io.hpp"
+#include "texture/rotation.hpp"
+#include "texture/texture_rules.hpp"
 
 namespace
 {
@@ -519,9 +520,9 @@ void compareResults(const SearchResult &actual, const SearchResult &expected,
 SearchResult baselineSearch(const SearchBounds &bounds, const std::vector<BlockInfo> &tops,
                             const std::vector<BlockInfo> &sides, float &kernelMs)
 {
-    SearchResult result;
-    result.matches = runSearch(bounds, tops, sides, MODERN_VERSION, &kernelMs, nullptr, &result.total);
-    return result;
+    auto result = runSearch(bounds, tops, sides, MODERN_VERSION);
+    kernelMs = result.kernelMs;
+    return {std::move(result.matches), result.total};
 }
 
 void verifySmallCase(bool worldY, int candidateLevels, bool sparseLevels, bool precompute = false)

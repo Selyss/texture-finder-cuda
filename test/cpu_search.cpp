@@ -11,10 +11,10 @@
 #include <string>
 #include <vector>
 
-#include "blockinfo.cuh"
-#include "parser.cuh"
-#include "rotation.cuh"
-#include "texture.cuh"
+#include "texture/formation.hpp"
+#include "texture/formation_io.hpp"
+#include "texture/rotation.hpp"
+#include "texture/texture_rules.hpp"
 
 namespace
 {

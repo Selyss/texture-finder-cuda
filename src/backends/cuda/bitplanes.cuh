@@ -4,8 +4,8 @@
 #include <limits>
 #include <type_traits>
 
-#include "kernel.cuh"
-#include "texture.cuh"
+#include "search/backend.hpp"
+#include "texture/texture_rules.hpp"
 
 namespace cuda_bitplanes
 {

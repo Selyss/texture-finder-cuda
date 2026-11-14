@@ -1,5 +1,5 @@
 #pragma once
-#include "blockinfo.cuh"
+#include "texture/formation.hpp"
 
 // Rotates one block of a formation by 90 degrees about the y axis:
 // (x, z) -> (-z, x), i.e. east -> south viewed from above.

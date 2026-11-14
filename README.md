@@ -56,6 +56,17 @@ CPU backend outruns the original Java tool (see docs/BENCHMARKS.md).
 Windows: `make windows NVCC=nvcc` (edit `CCBIN` in the Makefile if your
 Visual Studio install path differs).
 
+### Source layout
+
+- `src/main.cpp` parses the command line and reports timing.
+- `src/texture/` owns formation parsing, rotation, and texture rules.
+- `src/search/session.cpp` schedules directions and slices and reports results.
+  `src/search/checkpoint.cpp` owns the resume file format.
+- `src/search/backend.hpp` defines the interface implemented by CPU, CUDA,
+  and Metal in `src/backends/`. The build links one backend.
+- `test/` contains fixtures and validation tools. `experiments/` contains
+  standalone performance prototypes, with results in `docs/EXPERIMENTS.md`.
+
 ### Testing
 - `make test` — unit suite against the real headers (no GPU needed)
 - `test/e2e.sh` — full end-to-end suite against whichever backend is built

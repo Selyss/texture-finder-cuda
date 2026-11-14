@@ -7,8 +7,8 @@
 #include <string_view>
 #include <utility>
 
-#include "cuda_bitplanes.cuh"
-#include "texture.cuh"
+#include "backends/cuda/bitplanes.cuh"
+#include "texture/texture_rules.hpp"
 
 #define CUDA_CHECK(call)                                                          \
     do                                                                            \
@@ -45,7 +45,7 @@ static_assert(TF_BLOCK_THREADS % WARP == 0, "partial warps break the full-mask w
 // candidate's own terms instead of multiplying.
 // w = expected rotation | (compare mask << 8); mask is 3 for top faces and 1
 // for side faces, because for mods 2 and 4 both generators reduce to the
-// mod-4 value masked down (see texture.cuh: side value == top roll % 2).
+// mod-4 value masked down (see texture/texture_rules.hpp: side value == top roll % 2).
 struct DevBlock
 {
     long long zTerm; // bz * 116129781
@@ -205,15 +205,10 @@ namespace
 using namespace cuda_bitplanes;
 
 // Preserve the per-call count, output limit, and ordering for both CUDA paths.
-std::vector<MatchResult> collectMatches(const MatchResult *output, const Word *counter,
-                                       bool *truncated, Word *totalMatches)
+DirectionResult collectMatches(const MatchResult *output, const Word *counter)
 {
     Word count = 0;
     CUDA_CHECK(cudaMemcpy(&count, counter, sizeof(count), cudaMemcpyDeviceToHost));
-    if (truncated)
-        *truncated = count > MAX_MATCHES;
-    if (totalMatches)
-        *totalMatches = count;
 
     std::vector<MatchResult> matches(std::min<Word>(count, MAX_MATCHES));
     if (!matches.empty())
@@ -222,7 +217,7 @@ std::vector<MatchResult> collectMatches(const MatchResult *output, const Word *c
     std::sort(matches.begin(), matches.end(), [](const MatchResult &a, const MatchResult &b) {
         return a.x != b.x ? a.x < b.x : (a.y != b.y ? a.y < b.y : a.z < b.z);
     });
-    return matches;
+    return {std::move(matches), count, count > MAX_MATCHES};
 }
 
 size_t planeBudget()
@@ -261,7 +256,7 @@ struct DirectionChecks
 };
 
 std::optional<std::vector<DirectionResult>> tryBitplanes(
-    const SearchBounds &bounds, const std::vector<std::vector<BlockInfo>> &formations, float *kernelMs)
+    const SearchBounds &bounds, const std::vector<std::vector<BlockInfo>> &formations, float &kernelMs)
 {
     int minX = formations.front().front().x, maxX = minX;
     int minZ = formations.front().front().z, maxZ = minZ;
@@ -419,8 +414,7 @@ std::optional<std::vector<DirectionResult>> tryBitplanes(
     }
     CUDA_CHECK(cudaEventRecord(stop));
     CUDA_CHECK(cudaEventSynchronize(stop));
-    if (kernelMs)
-        CUDA_CHECK(cudaEventElapsedTime(kernelMs, start, stop));
+    CUDA_CHECK(cudaEventElapsedTime(&kernelMs, start, stop));
     CUDA_CHECK(cudaEventDestroy(start));
     CUDA_CHECK(cudaEventDestroy(stop));
 
@@ -428,8 +422,7 @@ std::optional<std::vector<DirectionResult>> tryBitplanes(
     for (size_t i = 0; i < directions.size(); ++i)
     {
         const auto &direction = directions[i];
-        auto &result = results[i];
-        result.matches = collectMatches(direction.output, direction.counter, &result.truncated, &result.total);
+        results[i] = collectMatches(direction.output, direction.counter);
         CUDA_CHECK(cudaFree(direction.counter));
         CUDA_CHECK(cudaFree(direction.output));
         CUDA_CHECK(cudaFree(direction.deviceVerifyOffsets));
@@ -443,13 +436,9 @@ std::optional<std::vector<DirectionResult>> tryBitplanes(
 }
 } // namespace
 
-std::vector<MatchResult> runSearch(const SearchBounds &bounds,
-                                   const std::vector<BlockInfo> &topsAndBottoms,
-                                   const std::vector<BlockInfo> &sides,
-                                   int version,
-                                   float *kernelMs,
-                                   bool *truncated,
-                                   unsigned long long *totalMatches)
+DirectionResult runSearch(const SearchBounds &bounds,
+                          const std::vector<BlockInfo> &topsAndBottoms,
+                          const std::vector<BlockInfo> &sides, int version)
 {
     if (topsAndBottoms.size() > MAX_FORMATION_BLOCKS || sides.size() > MAX_FORMATION_BLOCKS)
     {
@@ -495,16 +484,13 @@ std::vector<MatchResult> runSearch(const SearchBounds &bounds,
             formations.front().insert(formations.front().end(), sides.begin(), sides.end());
             if (eligibleForBitplanes(formations.front()))
             {
-                if (auto results = tryBitplanes(bounds, formations, kernelMs))
+                float ms = 0;
+                if (auto results = tryBitplanes(bounds, formations, ms))
                 {
                     if (trace)
                         std::fputs("CUDA search: bitplanes\n", stderr);
-                    auto &result = results->front();
-                    if (truncated)
-                        *truncated = result.truncated;
-                    if (totalMatches)
-                        *totalMatches = result.total;
-                    return std::move(result.matches);
+                    results->front().kernelMs = ms;
+                    return std::move(results->front());
                 }
             }
         }
@@ -577,20 +563,17 @@ std::vector<MatchResult> runSearch(const SearchBounds &bounds,
     CUDA_CHECK(cudaEventRecord(evStop));
     CUDA_CHECK(cudaEventSynchronize(evStop));
 
-    if (kernelMs)
-    {
-        float ms = 0.f;
-        CUDA_CHECK(cudaEventElapsedTime(&ms, evStart, evStop));
-        *kernelMs = ms;
-    }
+    float ms = 0.0f;
+    CUDA_CHECK(cudaEventElapsedTime(&ms, evStart, evStop));
     CUDA_CHECK(cudaEventDestroy(evStart));
     CUDA_CHECK(cudaEventDestroy(evStop));
 
-    auto matches = collectMatches(d_out, d_count, truncated, totalMatches);
+    auto result = collectMatches(d_out, d_count);
+    result.kernelMs = ms;
     CUDA_CHECK(cudaFree(d_out));
     CUDA_CHECK(cudaFree(d_count));
     CUDA_CHECK(cudaFree(d_cursor));
-    return matches;
+    return result;
 }
 
 bool sharedSearchEnabled(int version)
@@ -599,11 +582,11 @@ bool sharedSearchEnabled(int version)
     return version == MODERN_VERSION && enabled && std::string_view(enabled) == "1";
 }
 
-std::vector<DirectionResult> runSharedSearch(const SearchBounds &bounds,
-                                             const std::vector<SearchFormation> &formations,
-                                             int version, double &kernelSec)
+SharedSearchResult runSharedSearch(const SearchBounds &bounds,
+                                   const std::vector<SearchFormation> &formations, int version)
 {
-    std::vector<DirectionResult> results(formations.size());
+    SharedSearchResult result;
+    result.directions.resize(formations.size());
     std::vector<size_t> sharedIndices;
     std::vector<std::vector<BlockInfo>> eligible;
     if (sharedSearchEnabled(version))
@@ -626,10 +609,10 @@ std::vector<DirectionResult> runSharedSearch(const SearchBounds &bounds,
     if (eligible.size() > 1)
     {
         float ms = 0;
-        shared = tryBitplanes(bounds, eligible, &ms);
+        shared = tryBitplanes(bounds, eligible, ms);
         if (shared)
         {
-            kernelSec += ms / 1000.0;
+            result.kernelSeconds += ms / 1000.0;
             if (std::getenv("TF_CUDA_BITPLANES_TRACE"))
                 std::fprintf(stderr, "CUDA search: bitplanes shared (%zu directions)\n", shared->size());
         }
@@ -639,14 +622,11 @@ std::vector<DirectionResult> runSharedSearch(const SearchBounds &bounds,
     {
         if (shared && nextShared < sharedIndices.size() && sharedIndices[nextShared] == i)
         {
-            results[i] = std::move((*shared)[nextShared++]);
+            result.directions[i] = std::move((*shared)[nextShared++]);
             continue;
         }
-        auto &result = results[i];
-        float ms = 0;
-        result.matches = runSearch(bounds, formations[i].tops, formations[i].sides,
-                                   version, &ms, &result.truncated, &result.total);
-        kernelSec += ms / 1000.0;
+        result.directions[i] = runSearch(bounds, formations[i].tops, formations[i].sides, version);
+        result.kernelSeconds += result.directions[i].kernelMs / 1000.0;
     }
-    return results;
+    return result;
 }

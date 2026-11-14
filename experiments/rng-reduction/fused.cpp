@@ -11,7 +11,7 @@
 //     never needs a neighbour's bits.
 //
 // Build and run from this directory:
-//   clang++ -O2 -std=c++17 -I../../include fused.cpp -o fused
+//   clang++ -O2 -std=c++17 -I../../src fused.cpp -o fused
 //   ./fused ../../test/fixtures/formation_a.txt
 //
 // Output: a randomised comparison against brute force (planted matches,
@@ -23,7 +23,7 @@
 #include <cstdlib>
 #include <random>
 #include <vector>
-#include "texture.cuh"
+#include "texture/texture_rules.hpp"
 struct B { int dx, dy, dz, rot; };
 static int tex(int64_t x, int y, int64_t z) { return getTextureForVersion(0, (int)x, y, (int)z, 4); }
 static int pmod(int64_t a, int m) { int r = (int)(a % m); return r < 0 ? r + m : r; }
