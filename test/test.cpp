@@ -8,6 +8,7 @@
 #include <vector>
 
 // The real headers the kernel compiles — not copies.
+#include "backends/cuda/bitplane_plan.hpp"
 #include "texture/formation.hpp"
 #include "texture/formation_io.hpp"
 #include "texture/rotation.hpp"
@@ -228,4 +229,119 @@ TEST_CASE("parser - consistent duplicates and top+side pairs are accepted") {
   auto f = parse_formation_file(path);
   CHECK(f.size() == 3);
   std::remove(path.c_str());
+}
+
+// The bitplane planner is host code, so the layout the CUDA kernels index is
+// checked here without a GPU.
+namespace {
+using namespace cuda_bitplanes;
+
+const SearchBounds PLAN_BOUNDS{-70, 100, -3, 2, -37, 41};
+
+// Two top faces on every z coset, with offsets on both sides of the origin.
+std::vector<BlockInfo> plan_formation() {
+  std::vector<BlockInfo> blocks;
+  for (int i = 0; i < 2 * STRIDE; ++i)
+    blocks.push_back({13 * i - 60, i % 3 - 1, i - 4, i % 4, false});
+  blocks.push_back({7, 2, 3, 1, true});
+  return blocks;
+}
+} // namespace
+
+TEST_CASE("bitplanes - residue is the non-negative remainder") {
+  for (int z = -12; z <= 12; ++z) {
+    CHECK(residue(z) >= 0);
+    CHECK(residue(z) < STRIDE);
+    CHECK((z - residue(z)) % STRIDE == 0);
+  }
+}
+
+TEST_CASE("bitplanes - compact levels list each needed world y once, ascending") {
+  const SearchBounds bounds{0, 0, 10, 12, 0, 0};
+  CHECK(compact_levels(bounds, {-1, 0, 5}) == std::vector<int>{9, 10, 11, 12, 15, 16, 17});
+}
+
+TEST_CASE("bitplanes - eligibility needs four filter bits on every z coset") {
+  auto blocks = plan_formation();
+  CHECK(eligible(blocks));
+  blocks.erase(blocks.begin()); // leaves one coset with a single top face
+  CHECK_FALSE(eligible(blocks));
+}
+
+TEST_CASE("bitplanes - a budget too small for one slab gives no plan") {
+  const std::vector<std::vector<BlockInfo>> formations{plan_formation()};
+  CHECK_FALSE(plan_search(PLAN_BOUNDS, formations, 1).has_value());
+  CHECK(plan_search(PLAN_BOUNDS, formations, std::size_t{1} << 30).has_value());
+}
+
+TEST_CASE("bitplanes - every block is a plane check on its own coset and verified on the others") {
+  const auto blocks = plan_formation();
+  const std::vector<std::vector<BlockInfo>> formations{blocks};
+  const auto plan = plan_search(PLAN_BOUNDS, formations, std::size_t{1} << 30);
+  REQUIRE(plan.has_value());
+  const auto& direction = plan->directions.front();
+  CHECK(direction.checks.size() == blocks.size());
+  CHECK(direction.verify.size() == blocks.size() * (STRIDE - 1));
+  for (int coset = 0; coset < STRIDE; ++coset) {
+    const int on_plane = direction.offsets[coset + 1] - direction.offsets[coset];
+    const int verified = direction.verify_offsets[coset + 1] - direction.verify_offsets[coset];
+    CHECK(on_plane + verified == static_cast<int>(blocks.size()));
+  }
+}
+
+// Replays the index arithmetic of fill_planes and match_words: the field bit a
+// plane check reads for a candidate must be the one that was hashed for the
+// candidate's position plus the block offset.
+TEST_CASE("bitplanes - plane checks read the block's own position in every slab") {
+  const auto blocks = plan_formation();
+  const std::vector<std::vector<BlockInfo>> formations{blocks};
+  const auto roomy = plan_search(PLAN_BOUNDS, formations, std::size_t{1} << 30);
+  REQUIRE(roomy.has_value());
+  // Room for seven hashed rows, so the 79 z rows need several slabs.
+  const auto row_bytes = roomy->plane_y.size() * roomy->field_words * sizeof(Planes);
+  const auto plan = plan_search(PLAN_BOUNDS, formations, 7 * row_bytes);
+  REQUIRE(plan.has_value());
+  CHECK(plan->slab_rows < static_cast<int>(PLAN_BOUNDS.nz()));
+
+  const auto& direction = plan->directions.front();
+  std::vector<PlaneCheck> slab_checks(direction.checks.size());
+  std::int64_t rows_covered = 0;
+  for (std::int64_t z_offset = 0; z_offset < static_cast<std::int64_t>(PLAN_BOUNDS.nz());) {
+    const auto slab = plan->slab(z_offset);
+    const auto& layout = slab.layout;
+    REQUIRE(layout.nz > 0);
+    CHECK(layout.bounds.z_min == PLAN_BOUNDS.z_min + z_offset);
+    CHECK(slab.field_words <= plan->plane_words);
+    prepare_plane_checks(layout, direction.checks, direction.offsets.data(), slab_checks);
+
+    for (int row = 0; row < layout.nz; ++row)
+      for (int level = 0; level < layout.ny; ++level)
+        for (int word = 0; word < layout.candidate_words; ++word) {
+          const int z = layout.bounds.z_min + row;
+          const int coset = residue(z);
+          const std::size_t base =
+              (static_cast<std::size_t>(level) * layout.hashed_rows + row / STRIDE) * layout.field_words +
+              word;
+          for (int i = direction.offsets[coset]; i < direction.offsets[coset + 1]; ++i) {
+            const auto& check = direction.checks[i];
+            const std::size_t index = base + slab_checks[i].offset;
+            REQUIRE(index + 1 < slab.field_words);
+            const auto field_word = index % layout.field_words;
+            const auto field_row = index / layout.field_words;
+            const auto hashed_z =
+                layout.first_hashed_z + static_cast<std::int64_t>(field_row % layout.hashed_rows) * STRIDE;
+            const int hashed_y = plan->plane_y[field_row / layout.hashed_rows];
+            const auto hashed_x =
+                layout.field_x + static_cast<std::int64_t>(field_word) * WORD_BITS + slab_checks[i].shift;
+            const int block_x = check.x_offset + plan->min_x;
+            const int block_y = plan->plane_y[check.y_slot] - PLAN_BOUNDS.y_min;
+            REQUIRE(hashed_z == z + check.z_offset);
+            REQUIRE(hashed_y == PLAN_BOUNDS.y_min + level + block_y);
+            REQUIRE(hashed_x == PLAN_BOUNDS.x_min + word * WORD_BITS + block_x);
+          }
+        }
+    rows_covered += layout.nz;
+    z_offset += layout.nz;
+  }
+  CHECK(rows_covered == static_cast<std::int64_t>(PLAN_BOUNDS.nz()));
 }

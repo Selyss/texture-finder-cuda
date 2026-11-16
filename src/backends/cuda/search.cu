@@ -1,23 +1,15 @@
 #include <algorithm>
-#include <array>
-#include <charconv>
 #include <cstdio>
-#include <cstdlib>
-#include <optional>
-#include <string_view>
-#include <utility>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
-#include "backends/cuda/bitplanes.cuh"
+#include "backends/cuda/bitplane_plan.hpp"
+#include "backends/cuda/bitplane_search.hpp"
+#include "backends/cuda/device.hpp"
+#include "backends/cuda/match_buffer.hpp"
 #include "texture/texture_rules.hpp"
-
-#define CUDA_CHECK(call)                                                                                     \
-  do {                                                                                                       \
-    cudaError_t err_ = (call);                                                                               \
-    if (err_ != cudaSuccess) {                                                                               \
-      std::fprintf(stderr, "CUDA error at %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err_));       \
-      std::exit(2);                                                                                          \
-    }                                                                                                        \
-  } while (0)
 
 std::string_view search_backend_name() {
   return "CUDA";
@@ -185,401 +177,161 @@ __global__ void __launch_bounds__(TF_BLOCK_THREADS)
 }
 
 namespace {
-using namespace cuda_bitplanes;
 
-// Preserve the per-call count, output limit, and ordering for both CUDA paths.
-DirectionResult collect_matches(const MatchResult* output, const Word* counter) {
-  Word count = 0;
-  CUDA_CHECK(cudaMemcpy(&count, counter, sizeof(count), cudaMemcpyDeviceToHost));
+using Count = cuda::MatchBuffer::Count;
+using Kernel = void (*)(SearchBounds, int, Count, Count*, MatchResult*, Count*);
 
-  std::vector<MatchResult> matches(std::min<Word>(count, MAX_MATCHES));
-  if (!matches.empty())
-    CUDA_CHECK(
-        cudaMemcpy(matches.data(), output, matches.size() * sizeof(MatchResult), cudaMemcpyDeviceToHost));
-  std::sort(matches.begin(), matches.end(), [](const MatchResult& a, const MatchResult& b) {
-    return a.x != b.x ? a.x < b.x : (a.y != b.y ? a.y < b.y : a.z < b.z);
-  });
-  return {std::move(matches), count, count > MAX_MATCHES};
-}
-
-size_t plane_budget() {
-  constexpr size_t default_budget = size_t{1} << 30;
-  const char* setting = std::getenv("TF_CUDA_BITPLANES_BYTES");
-  if (!setting)
-    return default_budget;
-  const std::string_view value(setting);
-  size_t bytes = 0;
-  const auto parsed = std::from_chars(value.data(), value.data() + value.size(), bytes);
-  return parsed.ec == std::errc{} && parsed.ptr == value.data() + value.size()
-             ? std::min(bytes, default_budget)
-             : 0;
-}
-
-bool eligible_for_bitplanes(const std::vector<BlockInfo>& blocks) {
-  std::array<int, STRIDE> filter_bits{};
-  for (const auto& block : blocks)
-    filter_bits[residue(-static_cast<int64_t>(block.z))] += block.is_side ? 1 : 2;
-  // A weak coset can send most of its candidates through scalar verification.
-  return *std::min_element(filter_bits.begin(), filter_bits.end()) >= 4;
-}
-
-struct DirectionChecks {
-  std::vector<Check> checks;
-  std::vector<VerifyCheck> verify;
-  std::array<int, STRIDE + 1> offsets{}, verify_offsets{};
-  PlaneCheck* device_checks = nullptr;
-  VerifyCheck* device_verify = nullptr;
-  int *device_offsets = nullptr, *device_verify_offsets = nullptr;
-  MatchResult* output = nullptr;
-  Word* counter = nullptr;
-  std::vector<PlaneCheck> slab_checks;
-};
-
-std::optional<std::vector<DirectionResult>>
-try_bitplanes(const SearchBounds& bounds, const std::vector<std::vector<BlockInfo>>& formations,
-              float& kernel_ms) {
-  int min_x = formations.front().front().x, max_x = min_x;
-  int min_z = formations.front().front().z, max_z = min_z;
-  std::vector<int> y_offsets;
-  for (const auto& blocks : formations)
-    for (const auto& block : blocks) {
-      min_x = std::min(min_x, block.x);
-      max_x = std::max(max_x, block.x);
-      min_z = std::min(min_z, block.z);
-      max_z = std::max(max_z, block.z);
-      y_offsets.push_back(block.y);
-    }
-
-  const int64_t nx = static_cast<int64_t>(bounds.x_max) - bounds.x_min + 1;
-  const int64_t ny = static_cast<int64_t>(bounds.y_max) - bounds.y_min + 1;
-  const int64_t nz = static_cast<int64_t>(bounds.z_max) - bounds.z_min + 1;
-  const int64_t field_x = static_cast<int64_t>(bounds.x_min) + min_x;
-  const int64_t width = nx + static_cast<int64_t>(max_x) - min_x;
-  const int64_t halo = static_cast<int64_t>(max_z) - min_z;
-  std::sort(y_offsets.begin(), y_offsets.end());
-  y_offsets.erase(std::unique(y_offsets.begin(), y_offsets.end()), y_offsets.end());
-  constexpr int int_min = std::numeric_limits<int>::min();
-  constexpr int int_max = std::numeric_limits<int>::max();
-  if (nx <= 0 || ny <= 0 || nz <= 0 || width > int_max || ny > int_max || nz > int_max || field_x < int_min ||
-      field_x + width - 1 > int_max || static_cast<int64_t>(bounds.z_min) + min_z < int_min ||
-      static_cast<int64_t>(bounds.z_max) + max_z > int_max ||
-      static_cast<int64_t>(bounds.y_min) + y_offsets.front() < int_min ||
-      static_cast<int64_t>(bounds.y_max) + y_offsets.back() > int_max)
-    return std::nullopt;
-
-  const size_t field_words = ceil_div(static_cast<int>(width), WORD_BITS) + 1;
-  const int candidate_words = ceil_div(static_cast<int>(nx), WORD_BITS);
-  const int segments = ceil_div(candidate_words, THREADS);
-  constexpr size_t result_bytes = MAX_MATCHES * sizeof(MatchResult);
-  size_t free_bytes = 0, total_bytes = 0;
-  CUDA_CHECK(cudaMemGetInfo(&free_bytes, &total_bytes));
-  // Leave room for results and the small metadata buffers.
-  const size_t reserve = formations.size() * result_bytes + (size_t{16} << 20);
-  const size_t budget = std::min(plane_budget(), free_bytes > reserve ? free_bytes - reserve : 0);
-  const size_t words_budget = budget / sizeof(Planes);
-  if (static_cast<size_t>(ny) > words_budget / field_words)
-    return std::nullopt;
-
-  const auto plane_y = compact_levels(bounds, y_offsets);
-  if (plane_y.size() > words_budget / field_words)
-    return std::nullopt;
-  const size_t words_per_z = plane_y.size() * field_words;
-  const size_t hashed_capacity = words_budget / words_per_z;
-  const int64_t max_rows = static_cast<int64_t>(hashed_capacity) * STRIDE - halo;
-  const size_t grid_per_z = static_cast<size_t>(ny) * segments;
-  const int64_t planned_rows =
-      std::min<int64_t>({nz, DEFAULT_SLAB_ROWS, max_rows, static_cast<int64_t>(int_max / grid_per_z)});
-  if (planned_rows <= 0)
-    return std::nullopt;
-  const int slab_rows = static_cast<int>(planned_rows);
-
-  const size_t plane_words = words_per_z * ((slab_rows + halo + STRIDE - 1) / STRIDE);
-  std::vector<DirectionChecks> directions(formations.size());
-  for (size_t i = 0; i < formations.size(); ++i) {
-    auto& direction = directions[i];
-    const auto& blocks = formations[i];
-    for (int coset = 0; coset < STRIDE; ++coset) {
-      for (const auto& block : blocks) {
-        if (residue(-static_cast<int64_t>(block.z)) == coset) {
-          const auto level = std::lower_bound(plane_y.begin(), plane_y.end(), bounds.y_min + block.y);
-          direction.checks.push_back({block.x - min_x, static_cast<int>(level - plane_y.begin()), block.z,
-                                      block.rotation, block.is_side});
-        } else
-          direction.verify.push_back({static_cast<int64_t>(block.z) * 116129781LL,
-                                      static_cast<uint32_t>(block.x) * 3129871u, block.y, block.rotation,
-                                      block.is_side ? 1 : 3});
-      }
-      direction.offsets[coset + 1] = static_cast<int>(direction.checks.size());
-      direction.verify_offsets[coset + 1] = static_cast<int>(direction.verify.size());
-    }
-  }
-
-  Planes* planes = nullptr;
-  const cudaError_t allocation = cudaMalloc(&planes, plane_words * sizeof(Planes));
-  if (allocation == cudaErrorMemoryAllocation) {
-    cudaGetLastError();
-    return std::nullopt;
-  }
-  CUDA_CHECK(allocation);
-
-  auto upload = [](const auto& values) {
-    using Element = typename std::decay_t<decltype(values)>::value_type;
-    Element* device = nullptr;
-    if (!values.empty()) {
-      const size_t bytes = values.size() * sizeof(Element);
-      CUDA_CHECK(cudaMalloc(&device, bytes));
-      CUDA_CHECK(cudaMemcpy(device, values.data(), bytes, cudaMemcpyHostToDevice));
-    }
-    return device;
-  };
-  auto* device_y = upload(plane_y);
-  for (auto& direction : directions) {
-    direction.slab_checks.resize(direction.checks.size());
-    CUDA_CHECK(cudaMalloc(&direction.device_checks, direction.slab_checks.size() * sizeof(PlaneCheck)));
-    direction.device_verify = upload(direction.verify);
-    direction.device_offsets = upload(direction.offsets);
-    direction.device_verify_offsets = upload(direction.verify_offsets);
-    CUDA_CHECK(cudaMalloc(&direction.output, result_bytes));
-    CUDA_CHECK(cudaMalloc(&direction.counter, sizeof(Word)));
-    CUDA_CHECK(cudaMemset(direction.counter, 0, sizeof(Word)));
-  }
-
-  cudaEvent_t start, stop;
-  CUDA_CHECK(cudaEventCreate(&start));
-  CUDA_CHECK(cudaEventCreate(&stop));
-  CUDA_CHECK(cudaEventRecord(start));
-  for (int64_t offset = 0; offset < nz;) {
-    const int rows = static_cast<int>(std::min<int64_t>(slab_rows, nz - offset));
-    SearchBounds slab = bounds;
-    slab.z_min = static_cast<int>(bounds.z_min + offset);
-    slab.z_max = slab.z_min + (rows - 1);
-    const int64_t halo_start = static_cast<int64_t>(slab.z_min) + min_z;
-    const int64_t halo_end = static_cast<int64_t>(slab.z_max) + max_z;
-    const int64_t first_z = halo_start + residue(-halo_start);
-    const int hashed_rows = first_z <= halo_end ? static_cast<int>((halo_end - first_z) / STRIDE + 1) : 0;
-    const Layout layout{slab,
-                        static_cast<int>(nx),
-                        static_cast<int>(ny),
-                        rows,
-                        static_cast<int>(field_x),
-                        static_cast<int>(width),
-                        static_cast<int>(field_words),
-                        candidate_words,
-                        static_cast<int>(plane_y.size()),
-                        hashed_rows,
-                        first_z};
-    const size_t words = words_per_z * hashed_rows;
-    if (words) {
-      fill_planes<true, true><<<(words + THREADS - 1) / THREADS, THREADS>>>(layout, device_y, words, planes);
-      CUDA_CHECK(cudaGetLastError());
-    }
-    for (auto& direction : directions) {
-      prepare_plane_checks(layout, direction.checks, direction.offsets.data(), direction.slab_checks);
-      // Copies and kernels are ordered on the default stream.
-      CUDA_CHECK(cudaMemcpy(direction.device_checks, direction.slab_checks.data(),
-                            direction.slab_checks.size() * sizeof(PlaneCheck), cudaMemcpyHostToDevice));
-      match_words<MatchMode::Search, true, true><<<grid_per_z * rows, THREADS>>>(
-          layout, direction.device_checks, direction.device_offsets, planes, nullptr, nullptr, 0,
-          direction.device_verify, direction.device_verify_offsets, direction.output, direction.counter,
-          MAX_MATCHES);
-      CUDA_CHECK(cudaGetLastError());
-    }
-    offset += rows;
-  }
-  CUDA_CHECK(cudaEventRecord(stop));
-  CUDA_CHECK(cudaEventSynchronize(stop));
-  CUDA_CHECK(cudaEventElapsedTime(&kernel_ms, start, stop));
-  CUDA_CHECK(cudaEventDestroy(start));
-  CUDA_CHECK(cudaEventDestroy(stop));
-
-  std::vector<DirectionResult> results(directions.size());
-  for (size_t i = 0; i < directions.size(); ++i) {
-    const auto& direction = directions[i];
-    results[i] = collect_matches(direction.output, direction.counter);
-    CUDA_CHECK(cudaFree(direction.counter));
-    CUDA_CHECK(cudaFree(direction.output));
-    CUDA_CHECK(cudaFree(direction.device_verify_offsets));
-    CUDA_CHECK(cudaFree(direction.device_offsets));
-    CUDA_CHECK(cudaFree(direction.device_verify));
-    CUDA_CHECK(cudaFree(direction.device_checks));
-  }
-  CUDA_CHECK(cudaFree(device_y));
-  CUDA_CHECK(cudaFree(planes));
-  return results;
-}
-} // namespace
-
-DirectionResult run_search(const SearchBounds& bounds, const SearchFormation& formation, int version) {
-  const auto& tops_and_bottoms{formation.tops};
-  const auto& sides{formation.sides};
-  if (tops_and_bottoms.size() > MAX_FORMATION_BLOCKS || sides.size() > MAX_FORMATION_BLOCKS) {
-    std::fprintf(stderr, "Formation exceeds %d blocks per face type\n", MAX_FORMATION_BLOCKS);
-    std::exit(1);
-  }
-
-  // Tops first: a mod-4 check rejects 75% of candidates, a side check only
-  // 50%, so the most selective checks run earliest.
-  std::vector<DevBlock> blocks;
-  blocks.reserve(tops_and_bottoms.size() + sides.size());
-  for (const auto& t : tops_and_bottoms)
-    blocks.push_back(
-        {(long long)t.z * 116129781LL, (unsigned int)t.x * 3129871u, t.y, t.rotation | (3 << 8)});
-  for (const auto& s : sides)
-    blocks.push_back(
-        {(long long)s.z * 116129781LL, (unsigned int)s.x * 3129871u, s.y, s.rotation | (1 << 8)});
-  if (blocks.empty()) {
-    std::fprintf(stderr, "Empty formation\n");
-    std::exit(1);
-  }
-
-  const unsigned long long nx = (unsigned long long)((long long)bounds.x_max - bounds.x_min + 1);
-  const unsigned long long ny = (unsigned long long)((long long)bounds.y_max - bounds.y_min + 1);
-  const unsigned long long nz = (unsigned long long)((long long)bounds.z_max - bounds.z_min + 1);
-  // Two-step overflow guard: ny*nz itself must not overflow before it is
-  // used as a divisor (nx/ny/nz are each >= 1 by construction).
-  if (ny > (~0ull) / nz || nx > (~0ull) / (ny * nz)) {
-    std::fprintf(stderr, "Search volume too large\n");
-    std::exit(1);
-  }
-  const unsigned long long total = nx * ny * nz;
-
-  if (const char* enabled = std::getenv("TF_CUDA_BITPLANES"); enabled && std::string_view(enabled) == "1") {
-    const bool trace = std::getenv("TF_CUDA_BITPLANES_TRACE") != nullptr;
-    if (version == MODERN_VERSION) {
-      std::vector<std::vector<BlockInfo>> formations{tops_and_bottoms};
-      formations.front().insert(formations.front().end(), sides.begin(), sides.end());
-      if (eligible_for_bitplanes(formations.front())) {
-        float ms = 0;
-        if (auto results = try_bitplanes(bounds, formations, ms)) {
-          if (trace)
-            std::fputs("CUDA search: bitplanes\n", stderr);
-          results->front().kernel_seconds = ms / 1000.0;
-          return std::move(results->front());
-        }
-      }
-    }
-    if (trace)
-      std::fputs("CUDA search: baseline fallback\n", stderr);
-  }
-  CUDA_CHECK(cudaMemcpyToSymbol(d_blocks, blocks.data(), blocks.size() * sizeof(DevBlock)));
-
-  MatchResult* d_out = nullptr;
-  unsigned long long* d_count = nullptr;
-  unsigned long long* d_cursor = nullptr;
-  CUDA_CHECK(cudaMalloc(&d_out, MAX_MATCHES * sizeof(MatchResult)));
-  CUDA_CHECK(cudaMalloc(&d_count, sizeof(unsigned long long)));
-  CUDA_CHECK(cudaMalloc(&d_cursor, sizeof(unsigned long long)));
-  CUDA_CHECK(cudaMemset(d_count, 0, sizeof(unsigned long long)));
-  CUDA_CHECK(cudaMemset(d_cursor, 0, sizeof(unsigned long long)));
-
-  // Persistent-thread launch sized to fill the device exactly once.
-  int device = 0;
-  CUDA_CHECK(cudaGetDevice(&device));
-  cudaDeviceProp props;
-  CUDA_CHECK(cudaGetDeviceProperties(&props, device));
-  const size_t shared_bytes = blocks.size() * sizeof(DevBlock);
-
-  // Compile-time version dispatch: resolve the kernel instantiation once.
-  using KernelFn =
-      void (*)(SearchBounds, int, unsigned long long, unsigned long long*, MatchResult*, unsigned long long*);
-  KernelFn kernel;
+[[nodiscard]] Kernel kernel_for(int version) {
   switch (version) {
   case LEGACY_VERSION:
-    kernel = match_formation_kernel<LEGACY_VERSION>;
-    break;
+    return match_formation_kernel<LEGACY_VERSION>;
   case VANILLA12_VERSION:
-    kernel = match_formation_kernel<VANILLA12_VERSION>;
-    break;
+    return match_formation_kernel<VANILLA12_VERSION>;
   case SODIUM_VERSION:
-    kernel = match_formation_kernel<SODIUM_VERSION>;
-    break;
+    return match_formation_kernel<SODIUM_VERSION>;
   case SODIUM19_VERSION:
-    kernel = match_formation_kernel<SODIUM19_VERSION>;
-    break;
+    return match_formation_kernel<SODIUM19_VERSION>;
   default:
-    kernel = match_formation_kernel<MODERN_VERSION>;
-    break;
+    return match_formation_kernel<MODERN_VERSION>;
   }
+}
 
-  int blocks_per_sm = 0;
-  CUDA_CHECK(
+[[nodiscard]] DevBlock device_block(const BlockInfo& block) {
+  return {.z_term = static_cast<long long>(block.z) * 116129781LL,
+          .x_term = static_cast<unsigned int>(block.x) * 3129871u,
+          .dy = block.y,
+          .w = block.rotation | ((block.is_side ? 1 : 3) << 8)};
+}
+
+// Tops first: a top check rejects 75% of candidates and a side check 50%, so
+// the most selective checks run earliest.
+[[nodiscard]] std::vector<BlockInfo> tops_then_sides(const SearchFormation& formation) {
+  auto blocks{formation.tops};
+  blocks.insert(blocks.end(), formation.sides.begin(), formation.sides.end());
+  return blocks;
+}
+
+[[nodiscard]] Count checked_volume(const SearchBounds& bounds) {
+  constexpr auto limit{std::numeric_limits<Count>::max()};
+  const Count nx{bounds.nx()}, ny{bounds.ny()}, nz{bounds.nz()};
+  if (ny > limit / nz || nx > limit / (ny * nz))
+    throw std::invalid_argument{"search volume too large"};
+  return nx * ny * nz;
+}
+
+// Persistent threads: enough blocks to fill the device once, or fewer when
+// the search is too small to need them all.
+[[nodiscard]] unsigned int grid_blocks(Kernel kernel, std::size_t shared_bytes, Count positions) {
+  int device{0};
+  cuda::check(cudaGetDevice(&device));
+  cudaDeviceProp properties;
+  cuda::check(cudaGetDeviceProperties(&properties, device));
+  int blocks_per_sm{0};
+  cuda::check(
       cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks_per_sm, kernel, TF_BLOCK_THREADS, shared_bytes));
-  const unsigned long long chunk_size = (unsigned long long)WARP * TF_CHUNK_PER_LANE;
-  const unsigned long long chunks_needed = total / chunk_size + (total % chunk_size != 0);
-  const unsigned long long warps_needed = chunks_needed; // one chunk in flight per warp
-  unsigned long long grid =
-      (unsigned long long)props.multiProcessorCount * (blocks_per_sm > 0 ? blocks_per_sm : 1);
-  const unsigned long long grid_for_work = (warps_needed * WARP + TF_BLOCK_THREADS - 1) / TF_BLOCK_THREADS;
-  if (grid > grid_for_work)
-    grid = grid_for_work; // tiny searches don't need the whole device
-  if (grid == 0)
-    grid = 1;
 
-  cudaEvent_t ev_start, ev_stop;
-  CUDA_CHECK(cudaEventCreate(&ev_start));
-  CUDA_CHECK(cudaEventCreate(&ev_stop));
-  CUDA_CHECK(cudaEventRecord(ev_start));
+  const Count chunk_size{static_cast<Count>(WARP) * TF_CHUNK_PER_LANE};
+  const Count chunks{positions / chunk_size + (positions % chunk_size != 0)}; // one in flight per warp
+  const Count blocks_for_work{(chunks * WARP + TF_BLOCK_THREADS - 1) / TF_BLOCK_THREADS};
+  const Count blocks_on_device{static_cast<Count>(properties.multiProcessorCount) *
+                               static_cast<Count>(std::max(blocks_per_sm, 1))};
+  return static_cast<unsigned int>(std::max<Count>(1, std::min(blocks_on_device, blocks_for_work)));
+}
 
-  kernel<<<(unsigned int)grid, TF_BLOCK_THREADS, shared_bytes>>>(bounds, (int)blocks.size(), total, d_cursor,
-                                                                 d_out, d_count);
+[[nodiscard]] DirectionResult standard_search(const SearchBounds& bounds, std::span<const BlockInfo> blocks,
+                                              int version, Count positions) {
+  std::vector<DevBlock> device_blocks;
+  for (const auto& block : blocks)
+    device_blocks.push_back(device_block(block));
+  const auto shared_bytes{device_blocks.size() * sizeof(DevBlock)};
+  cuda::check(cudaMemcpyToSymbol(d_blocks, device_blocks.data(), shared_bytes));
 
-  CUDA_CHECK(cudaGetLastError());
-  CUDA_CHECK(cudaEventRecord(ev_stop));
-  CUDA_CHECK(cudaEventSynchronize(ev_stop));
+  const auto kernel{kernel_for(version)};
+  const auto grid{grid_blocks(kernel, shared_bytes, positions)};
+  const cuda::MatchBuffer matches;
+  cuda::DeviceArray<Count> cursor{1};
+  cursor.zero();
 
-  float ms = 0.0f;
-  CUDA_CHECK(cudaEventElapsedTime(&ms, ev_start, ev_stop));
-  CUDA_CHECK(cudaEventDestroy(ev_start));
-  CUDA_CHECK(cudaEventDestroy(ev_stop));
+  cuda::Timer timer;
+  kernel<<<grid, TF_BLOCK_THREADS, shared_bytes>>>(bounds, static_cast<int>(device_blocks.size()), positions,
+                                                   cursor.get(), matches.matches(), matches.count());
+  cuda::check(cudaGetLastError());
+  const auto seconds{timer.stop_seconds()};
 
-  auto result = collect_matches(d_out, d_count);
-  result.kernel_seconds = ms / 1000.0;
-  CUDA_CHECK(cudaFree(d_out));
-  CUDA_CHECK(cudaFree(d_count));
-  CUDA_CHECK(cudaFree(d_cursor));
+  auto result{matches.collect()};
+  result.kernel_seconds = seconds;
   return result;
 }
 
+void trace(const char* message) {
+  if (cuda_bitplanes::trace_enabled())
+    std::fprintf(stderr, "CUDA search: %s\n", message);
+}
+
+} // namespace
+
+DirectionResult run_search(const SearchBounds& bounds, const SearchFormation& formation, int version) {
+  if (formation.tops.size() > MAX_FORMATION_BLOCKS || formation.sides.size() > MAX_FORMATION_BLOCKS)
+    throw std::invalid_argument{"formation exceeds " + std::to_string(MAX_FORMATION_BLOCKS) +
+                                " blocks per face type"};
+  const std::vector<std::vector<BlockInfo>> blocks{tops_then_sides(formation)};
+  if (blocks.front().empty())
+    throw std::invalid_argument{"empty formation"};
+  const auto positions{checked_volume(bounds)};
+
+  if (cuda_bitplanes::requested()) {
+    if (version == MODERN_VERSION && cuda_bitplanes::eligible(blocks.front())) {
+      if (auto output{cuda_bitplanes::search(bounds, blocks)}) {
+        trace("bitplanes");
+        auto& result{output->directions.front()};
+        result.kernel_seconds = output->kernel_seconds;
+        return std::move(result);
+      }
+    }
+    trace("baseline fallback");
+  }
+  return standard_search(bounds, blocks.front(), version, positions);
+}
+
 bool shared_search_enabled(int version) {
-  const char* enabled = std::getenv("TF_CUDA_BITPLANES");
-  return version == MODERN_VERSION && enabled && std::string_view(enabled) == "1";
+  return version == MODERN_VERSION && cuda_bitplanes::requested();
 }
 
 SharedSearchResult run_shared_search(const SearchBounds& bounds, std::span<const SearchFormation> formations,
                                      int version) {
-  SharedSearchResult result;
-  result.directions.resize(formations.size());
-  std::vector<size_t> shared_indices;
-  std::vector<std::vector<BlockInfo>> eligible;
+  // Directions that can use bitplanes share one field. The rest run alone.
+  std::vector<std::size_t> shared_indices;
+  std::vector<std::vector<BlockInfo>> shared_blocks;
   if (shared_search_enabled(version)) {
-    for (size_t i = 0; i < formations.size(); ++i) {
-      const auto& candidate = formations[i];
-      if (candidate.tops.size() > MAX_FORMATION_BLOCKS || candidate.sides.size() > MAX_FORMATION_BLOCKS)
-        continue; // run_search reports the input error.
-      auto blocks = candidate.tops;
-      blocks.insert(blocks.end(), candidate.sides.begin(), candidate.sides.end());
-      if (eligible_for_bitplanes(blocks)) {
+    for (std::size_t i{0}; i < formations.size(); ++i) {
+      const auto& formation{formations[i]};
+      if (formation.tops.size() > MAX_FORMATION_BLOCKS || formation.sides.size() > MAX_FORMATION_BLOCKS)
+        continue; // run_search reports the error
+      auto blocks{tops_then_sides(formation)};
+      if (cuda_bitplanes::eligible(blocks)) {
         shared_indices.push_back(i);
-        eligible.push_back(std::move(blocks));
+        shared_blocks.push_back(std::move(blocks));
       }
     }
   }
-  std::optional<std::vector<DirectionResult>> shared;
-  if (eligible.size() > 1) {
-    float ms = 0;
-    shared = try_bitplanes(bounds, eligible, ms);
-    if (shared) {
-      result.kernel_seconds += ms / 1000.0;
-      if (std::getenv("TF_CUDA_BITPLANES_TRACE"))
-        std::fprintf(stderr, "CUDA search: bitplanes shared (%zu directions)\n", shared->size());
+
+  SharedSearchResult result;
+  result.directions.resize(formations.size());
+  std::vector<bool> done(formations.size(), false);
+  if (shared_blocks.size() > 1) {
+    if (auto output{cuda_bitplanes::search(bounds, shared_blocks)}) {
+      result.kernel_seconds += output->kernel_seconds;
+      if (cuda_bitplanes::trace_enabled())
+        std::fprintf(stderr, "CUDA search: bitplanes shared (%zu directions)\n", output->directions.size());
+      for (std::size_t i{0}; i < shared_indices.size(); ++i) {
+        result.directions[shared_indices[i]] = std::move(output->directions[i]);
+        done[shared_indices[i]] = true;
+      }
     }
   }
-  size_t next_shared = 0;
-  for (size_t i = 0; i < formations.size(); ++i) {
-    if (shared && next_shared < shared_indices.size() && shared_indices[next_shared] == i) {
-      result.directions[i] = std::move((*shared)[next_shared++]);
+  for (std::size_t i{0}; i < formations.size(); ++i) {
+    if (done[i])
       continue;
-    }
     result.directions[i] = run_search(bounds, formations[i], version);
     result.kernel_seconds += result.directions[i].kernel_seconds;
   }

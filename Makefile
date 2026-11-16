@@ -37,16 +37,17 @@ CXXFLAGS = -O3 -std=c++20 -Isrc $(WARNINGS)
 
 COMMON_SRC = src/main.cpp src/search/session.cpp src/search/checkpoint.cpp src/search/progress.cpp src/texture/formation_io.cpp
 COMMON_HEADERS = $(wildcard src/search/*.hpp src/texture/*.hpp)
-CUDA_HEADERS = $(wildcard src/backends/cuda/*.cuh)
+CUDA_SRC = src/backends/cuda/search.cu src/backends/cuda/bitplane_search.cu src/backends/cuda/bitplane_plan.cpp
+CUDA_HEADERS = $(wildcard src/backends/cuda/*.cuh src/backends/cuda/*.hpp)
 
 CCBIN = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.42.34433\bin\Hostx64\x64\cl.exe"
 
 all: build/main
 
 ifeq ($(BACKEND),cuda)
-build/main: $(COMMON_SRC) src/backends/cuda/search.cu $(COMMON_HEADERS) $(CUDA_HEADERS)
+build/main: $(COMMON_SRC) $(CUDA_SRC) $(COMMON_HEADERS) $(CUDA_HEADERS)
 	@mkdir -p build
-	$(NVCC) $(NVCCFLAGS) $(COMMON_SRC) src/backends/cuda/search.cu -o $@
+	$(NVCC) $(NVCCFLAGS) $(COMMON_SRC) $(CUDA_SRC) -o $@
 else ifeq ($(BACKEND),metal)
 build/main: $(COMMON_SRC) src/backends/metal/search.mm build/tf_shader_src.h $(COMMON_HEADERS)
 	$(CXX) $(CXXFLAGS) -Ibuild -fobjc-arc $(COMMON_SRC) src/backends/metal/search.mm \
@@ -65,15 +66,16 @@ build/tf_shader_src.h: src/texture/texture_rules.hpp src/backends/metal/match.me
 
 # On Windows run e.g. `make windows NVCC=nvcc` (the Unix-path default does
 # not apply there); the mkdir line tolerates the directory already existing.
-windows: $(COMMON_SRC) src/backends/cuda/search.cu $(COMMON_HEADERS) $(CUDA_HEADERS)
+windows: $(COMMON_SRC) $(CUDA_SRC) $(COMMON_HEADERS) $(CUDA_HEADERS)
 	-mkdir build
-	$(NVCC) -ccbin $(CCBIN) $(NVCCFLAGS) $(COMMON_SRC) src/backends/cuda/search.cu -o build/main.exe
+	$(NVCC) -ccbin $(CCBIN) $(NVCCFLAGS) $(COMMON_SRC) $(CUDA_SRC) -o build/main.exe
 
 # Host-only: compiles the exact headers the kernel uses, plus the parser,
 # against the doctest suite.
-build/test: test/test.cpp test/doctest.h src/texture/formation_io.cpp $(COMMON_HEADERS)
+TEST_SRC = test/test.cpp src/texture/formation_io.cpp src/backends/cuda/bitplane_plan.cpp
+build/test: $(TEST_SRC) test/doctest.h $(COMMON_HEADERS) $(CUDA_HEADERS)
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) -Itest test/test.cpp src/texture/formation_io.cpp -o $@
+	$(CXX) $(CXXFLAGS) -Itest $(TEST_SRC) -o $@
 
 test: build/test
 	./build/test
@@ -98,6 +100,6 @@ clean:
 .PHONY: all windows test tools clean
 
 # Standalone fixed-stride CUDA bitplane experiment.
-build/flat_cuda: experiments/rng-reduction/flat_cuda.cu src/backends/cuda/search.cu src/texture/formation_io.cpp $(COMMON_HEADERS) $(CUDA_HEADERS)
+build/flat_cuda: experiments/rng-reduction/flat_cuda.cu $(CUDA_SRC) src/texture/formation_io.cpp $(COMMON_HEADERS) $(CUDA_HEADERS)
 	@mkdir -p build
-	$(NVCC) $(NVCCFLAGS) -Xcompiler=-pthread $< src/backends/cuda/search.cu src/texture/formation_io.cpp -o $@
+	$(NVCC) $(NVCCFLAGS) -Xcompiler=-pthread $< $(CUDA_SRC) src/texture/formation_io.cpp -o $@
