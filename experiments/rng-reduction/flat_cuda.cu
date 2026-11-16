@@ -655,7 +655,7 @@ void compare_shared_field(const SearchBounds& bounds, const std::vector<BlockInf
     direction = blocks;
     union_blocks.insert(union_blocks.end(), blocks.begin(), blocks.end());
     for (auto& block : blocks)
-      rotate_formation(block);
+      rotate_block(block);
   }
   const Experiment union_field(bounds, union_blocks, true);
   std::array<std::optional<Experiment>, directions> independent, shared;
@@ -1279,7 +1279,7 @@ int main(int argc, char** argv) {
       compare_shared_field(small, synthetic, 1, true);
       for (int dir = 1; dir < 4; ++dir) {
         for (auto& block : synthetic)
-          rotate_formation(block);
+          rotate_block(block);
         compare_shared_field(small, synthetic, 5, true);
       }
       std::puts("PASS shared masks match independent GPU fields and CPU on synthetic slabs");

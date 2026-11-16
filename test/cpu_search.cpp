@@ -55,10 +55,7 @@ int main(int argc, char* argv[]) {
   std::vector<Found> found;
 
   for (int dir : directions) {
-    std::vector<BlockInfo> blocks = formation;
-    for (int r = 0; r < dir; r++)
-      for (auto& b : blocks)
-        rotate_formation(b);
+    std::vector<BlockInfo> blocks = rotated(formation, dir);
     std::stable_partition(blocks.begin(), blocks.end(), [](const BlockInfo& b) { return !b.is_side; });
 
     for (int x = x_min; x <= x_max; x++)

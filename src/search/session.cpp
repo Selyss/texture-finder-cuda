@@ -50,13 +50,6 @@ void print_header(const SearchRequest& request) {
   return blocks;
 }
 
-[[nodiscard]] std::vector<BlockInfo> rotated(std::vector<BlockInfo> blocks, int quarter_turns) {
-  for (int turn{0}; turn < quarter_turns; ++turn)
-    for (auto& block : blocks)
-      rotate_formation(block);
-  return blocks;
-}
-
 // Positions in one z layer. Throws if the whole volume overflows 64 bits.
 [[nodiscard]] std::uint64_t checked_layer_size(const SearchBounds& bounds) {
   constexpr auto limit{std::numeric_limits<std::uint64_t>::max()};

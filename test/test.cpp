@@ -120,51 +120,49 @@ TEST_CASE("formation_a matches at its verified origin") {
     CHECK(get_texture_modern(OX + b[0], OY + b[1], OZ + b[2], 4) == b[3]);
 }
 
-TEST_CASE("rotate_formation - coordinates cycle east -> south -> west -> north") {
+TEST_CASE("rotate_block - coordinates cycle east -> south -> west -> north") {
   BlockInfo b{1, 5, 0, 0, false};
-  rotate_formation(b);
+  rotate_block(b);
   CHECK(b.x == 0);
   CHECK(b.z == 1);
-  rotate_formation(b);
+  rotate_block(b);
   CHECK(b.x == -1);
   CHECK(b.z == 0);
-  rotate_formation(b);
+  rotate_block(b);
   CHECK(b.x == 0);
   CHECK(b.z == -1);
-  rotate_formation(b);
+  rotate_block(b);
   CHECK(b.x == 1);
   CHECK(b.z == 0);
   CHECK(b.y == 5);
 }
 
-TEST_CASE("rotate_formation - top rotations advance mod 4, side rotations flip parity") {
+TEST_CASE("rotate_block - top rotations advance mod 4, side rotations flip parity") {
   BlockInfo top{2, 0, 3, 3, false};
-  rotate_formation(top);
+  rotate_block(top);
   CHECK(top.rotation == 0);
 
   BlockInfo side{2, 0, 3, 1, true};
-  rotate_formation(side);
+  rotate_block(side);
   CHECK(side.rotation == 0);
-  rotate_formation(side);
+  rotate_block(side);
   CHECK(side.rotation == 1);
 
   // A side value must stay in {0, 1} after any number of rotations; the
   // old code let it reach 2-3, which a mod-2 texture can never equal.
   BlockInfo s{0, 0, 0, 1, true};
   for (int i = 0; i < 7; i++) {
-    rotate_formation(s);
+    rotate_block(s);
     CHECK(s.rotation >= 0);
     CHECK(s.rotation <= 1);
   }
 }
 
-TEST_CASE("rotate_formation - four rotations are the identity") {
+TEST_CASE("rotate_block - four rotations are the identity") {
   std::vector<BlockInfo> formation = {
       {1, 0, 0, 0, false}, {2, 1, -3, 3, false}, {-4, 2, 5, 1, true}, {0, -1, 7, 0, true}};
   std::vector<BlockInfo> original = formation;
-  for (int i = 0; i < 4; i++)
-    for (auto& b : formation)
-      rotate_formation(b);
+  formation = rotated(formation, 4);
   for (size_t i = 0; i < formation.size(); i++) {
     CHECK(formation[i].x == original[i].x);
     CHECK(formation[i].y == original[i].y);

@@ -59,12 +59,9 @@ int main(int argc, char* argv[]) {
     truth.push_back(b);
   }
 
-  // The searcher applies rotate_formation <direction> times to the file it
-  // reads; emitting truth rotated (4 - direction) times round-trips to the
-  // world frame exactly.
-  for (auto& b : truth)
-    for (int r = 0; r < (4 - direction) % 4; r++)
-      rotate_formation(b);
+  // The searcher turns the file it reads <direction> times; emitting truth
+  // turned (4 - direction) times round-trips to the world frame exactly.
+  truth = rotated(std::move(truth), (4 - direction) % 4);
 
   std::printf(
       "# synthetic formation: version=%d direction=%d origin=%d,%d,%d count=%d sidePercent=%d seed=%u\n",

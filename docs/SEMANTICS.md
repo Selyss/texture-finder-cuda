@@ -63,7 +63,7 @@ and `TextureFinder` compares against `getTexture(x, y, z, 2)`).
 ## Formation direction
 
 The reference tool has no direction feature; it is this project's addition.
-Convention: `rotate_formation` turns the formation a quarter turn,
+Convention: `rotate_block` turns each block of the formation a quarter turn,
 `(x, z) -> (-z, x)` (east -> south viewed from above), and advances the
 expected values one variant step: tops `+1 mod 4`, sides flip parity
 (`+1 mod 2`) — a side value must stay in {0, 1} or it could never match a
