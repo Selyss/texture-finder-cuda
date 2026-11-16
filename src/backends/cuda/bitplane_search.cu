@@ -55,9 +55,9 @@ struct DirectionBuffers {
 
 } // namespace
 
-bool requested() {
+bool enabled() {
   const auto* setting{std::getenv("TF_CUDA_BITPLANES")};
-  return setting && std::string_view{setting} == "1";
+  return !setting || std::string_view{setting} != "0";
 }
 
 bool trace_enabled() {

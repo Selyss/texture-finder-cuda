@@ -15,8 +15,8 @@ struct SearchOutput {
   double kernel_seconds{0.0};              // for the whole pass
 };
 
-// TF_CUDA_BITPLANES=1 asks for this path.
-[[nodiscard]] bool requested();
+// On unless TF_CUDA_BITPLANES=0, which keeps every search on the standard kernel.
+[[nodiscard]] bool enabled();
 
 // TF_CUDA_BITPLANES_TRACE makes the backend say on stderr which path ran.
 [[nodiscard]] bool trace_enabled();

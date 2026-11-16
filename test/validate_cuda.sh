@@ -7,6 +7,7 @@
 #   sbatch --account=<account> --gpus=1 --cpus-per-task=8 --mem=16G --time=00:20:00 test/validate_cuda.sh
 #   test/validate_cuda.sh
 # ARCH selects the nvcc target (default native). PAIRS sets timed pairs (default 5).
+# HARNESS_MODES=1 also runs every experiment mode of the harness (several minutes).
 # TF_MODULES lists environment modules to load first. A SOURCE_COMMIT file, if
 # present, identifies a tree that was copied without its .git directory.
 # Exit status is non-zero if any gate fails. Timings are printed, never judged.
@@ -41,7 +42,8 @@ if [ -f SOURCE_COMMIT ]; then cat SOURCE_COMMIT; else git rev-parse HEAD 2>/dev/
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
 nvcc --version | tail -1
 sha src/backends/cuda/search.cu src/backends/cuda/bitplanes.cuh src/search/session.cpp \
-    src/search/checkpoint.cpp src/search/backend.hpp experiments/rng-reduction/flat_cuda.cu
+    src/search/checkpoint.cpp src/search/backend.hpp experiments/rng-reduction/flat_cuda.cu \
+    experiments/rng-reduction/diagnostic_kernels.cuh
 
 echo "== Build"
 make clean >/dev/null
@@ -56,15 +58,15 @@ out=$(build/main "${REF[@]}" 0 2>&1 | grep -m1 "^Backend:")
 gate "binary reports the CUDA backend" [ "$out" = "Backend: CUDA" ]
 
 echo "== End-to-end, standard kernel"
-gate "e2e with bitplanes off" env -u TF_CUDA_BITPLANES test/e2e.sh
-echo "== End-to-end, opt-in bitplanes"
-gate "e2e with bitplanes on" env TF_CUDA_BITPLANES=1 test/e2e.sh
+gate "e2e with bitplanes off" env TF_CUDA_BITPLANES=0 test/e2e.sh
+echo "== End-to-end, default path"
+gate "e2e with bitplanes on" env -u TF_CUDA_BITPLANES test/e2e.sh
 
 run() { # <mode: 0|1> <direction> -> stdout of the CLI; stderr kept for traces
     if [ "$1" = 1 ]; then
-        TF_CUDA_BITPLANES=1 TF_CUDA_BITPLANES_TRACE=1 build/main "${REF[@]}" "$2" 2>&1
+        env -u TF_CUDA_BITPLANES TF_CUDA_BITPLANES_TRACE=1 build/main "${REF[@]}" "$2" 2>&1
     else
-        env -u TF_CUDA_BITPLANES build/main "${REF[@]}" "$2" 2>&1
+        TF_CUDA_BITPLANES=0 TF_CUDA_BITPLANES_TRACE=1 build/main "${REF[@]}" "$2" 2>&1
     fi
 }
 matches() { grep "^Match found" <<<"$1" | sort; }
@@ -78,19 +80,21 @@ gate "one direction never falls back" bash -c '! grep -q "baseline fallback" <<<
 gate "all directions share one field" grep -q "bitplanes shared (4 directions)" <<<"$all"
 gate "reference match, one direction" [ "$(matches "$one")" = "$EXPECT" ]
 gate "reference match, all directions" [ "$(matches "$all")" = "$EXPECT facing North" ]
-gate "standard kernel agrees, one direction" [ "$(matches "$(run 0 0)")" = "$EXPECT" ]
+off=$(run 0 0)
+gate "TF_CUDA_BITPLANES=0 keeps the standard kernel" bash -c '! grep -q "CUDA search:" <<<"$1"' _ "$off"
+gate "standard kernel agrees, one direction" [ "$(matches "$off")" = "$EXPECT" ]
 gate "standard kernel agrees, all directions" [ "$(matches "$(run 0 all)")" = "$EXPECT facing North" ]
 
 echo "== Forced fallback (1-byte plane budget)"
-out=$(TF_CUDA_BITPLANES=1 TF_CUDA_BITPLANES_TRACE=1 TF_CUDA_BITPLANES_BYTES=1 build/main "${REF[@]}" 0 2>&1)
+out=$(env -u TF_CUDA_BITPLANES TF_CUDA_BITPLANES_TRACE=1 TF_CUDA_BITPLANES_BYTES=1 build/main "${REF[@]}" 0 2>&1)
 gate "fallback is taken" grep -q "baseline fallback" <<<"$out"
 gate "fallback finds the match" [ "$(matches "$out")" = "$EXPECT" ]
 
 echo "== Checkpoint written by bitplanes, resumed by the standard kernel"
 ck=$(mktemp -u)
-TF_CUDA_BITPLANES=1 TF_MAX_SLICES=1 build/main "${REF[@]}" all --checkpoint "$ck" >/dev/null 2>&1
+env -u TF_CUDA_BITPLANES TF_MAX_SLICES=1 build/main "${REF[@]}" all --checkpoint "$ck" >/dev/null 2>&1
 gate "early stop leaves a checkpoint" [ -f "$ck" ]
-out=$(env -u TF_CUDA_BITPLANES build/main "${REF[@]}" all --checkpoint "$ck" 2>/dev/null)
+out=$(TF_CUDA_BITPLANES=0 build/main "${REF[@]}" all --checkpoint "$ck" 2>/dev/null)
 gate "resume reports the checkpoint" grep -q "Resuming from checkpoint" <<<"$out"
 gate "resume finds the match" grep -qF "$EXPECT facing North" <<<"$out"
 gate "resume removes the checkpoint" [ ! -f "$ck" ]
@@ -110,7 +114,15 @@ done
 
 echo "== Standalone harness on the reference"
 if [ -x build/flat_cuda ]; then
-    gate "harness default run" build/flat_cuda test/fixtures/formation_a.txt "${REF[@]:0:6}" "${SLURM_CPUS_PER_TASK:-4}"
+    harness=(build/flat_cuda test/fixtures/formation_a.txt "${REF[@]:0:6}" "${SLURM_CPUS_PER_TASK:-4}")
+    gate "harness default run" "${harness[@]}"
+    if [ -n "${HARNESS_MODES:-}" ]; then
+        # Each mode checks itself against the CPU reference or the standard kernel.
+        for mode in DUPLICATE_Y COMPARE_OFFSETS COMPARE_PACKING COMPARE_PACKING_SEARCH SHARED_FIELD FUSED; do
+            gate "harness $mode" env "TF_FLAT_$mode=1" "${harness[@]}"
+        done
+        gate "harness DIAGNOSTICS" env TF_FLAT_DIAGNOSTICS=all "${harness[@]}"
+    fi
 fi
 
 echo "== Result: $fails gate(s) failed"
