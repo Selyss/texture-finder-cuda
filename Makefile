@@ -44,16 +44,23 @@ CCBIN = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools
 
 all: build/main
 
+# build/main is one file for every backend, so switching BACKEND must rebuild it.
+BACKEND_STAMP = build/.backend-$(BACKEND)
+$(BACKEND_STAMP):
+	@mkdir -p build
+	@rm -f build/.backend-* build/main
+	@touch $@
+
 ifeq ($(BACKEND),cuda)
-build/main: $(COMMON_SRC) $(CUDA_SRC) $(COMMON_HEADERS) $(CUDA_HEADERS)
+build/main: $(COMMON_SRC) $(CUDA_SRC) $(COMMON_HEADERS) $(CUDA_HEADERS) $(BACKEND_STAMP)
 	@mkdir -p build
 	$(NVCC) $(NVCCFLAGS) $(COMMON_SRC) $(CUDA_SRC) -o $@
 else ifeq ($(BACKEND),metal)
-build/main: $(COMMON_SRC) src/backends/metal/search.mm build/tf_shader_src.h $(COMMON_HEADERS)
+build/main: $(COMMON_SRC) src/backends/metal/search.mm build/tf_shader_src.h $(COMMON_HEADERS) $(BACKEND_STAMP)
 	$(CXX) $(CXXFLAGS) -Ibuild -fobjc-arc $(COMMON_SRC) src/backends/metal/search.mm \
 	    -framework Metal -framework Foundation -o $@
 else
-build/main: $(COMMON_SRC) src/backends/cpu/search.cpp $(COMMON_HEADERS)
+build/main: $(COMMON_SRC) src/backends/cpu/search.cpp $(COMMON_HEADERS) $(BACKEND_STAMP)
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $(COMMON_SRC) src/backends/cpu/search.cpp -pthread -o $@
 endif

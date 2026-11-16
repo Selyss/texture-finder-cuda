@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <span>
@@ -38,24 +39,22 @@ void print_header(const SearchRequest& request) {
   std::cout.flush();
 }
 
-[[nodiscard]] SearchFormation split_by_face(std::span<const BlockInfo> blocks) {
-  SearchFormation formation;
-  for (const auto& block : blocks)
-    (block.is_side ? formation.sides : formation.tops).push_back(block);
-  if (formation.tops.size() > MAX_FORMATION_BLOCKS || formation.sides.size() > MAX_FORMATION_BLOCKS)
+// Top faces first, each group in file order: a top check rejects 75% of
+// candidates and a side check 50%, so backends test the tops first.
+[[nodiscard]] std::vector<BlockInfo> tops_first(std::vector<BlockInfo> blocks) {
+  const auto first_side{std::ranges::stable_partition(blocks, std::not_fn(&BlockInfo::is_side)).begin()};
+  const auto tops{static_cast<std::size_t>(first_side - blocks.begin())};
+  if (tops > MAX_FORMATION_BLOCKS || blocks.size() - tops > MAX_FORMATION_BLOCKS)
     throw std::runtime_error("formation has too many blocks (max " + std::to_string(MAX_FORMATION_BLOCKS) +
                              " per face type)");
-  return formation;
+  return blocks;
 }
 
-[[nodiscard]] SearchFormation rotated(SearchFormation formation, int quarter_turns) {
-  for (int turn{0}; turn < quarter_turns; ++turn) {
-    for (auto& block : formation.tops)
+[[nodiscard]] std::vector<BlockInfo> rotated(std::vector<BlockInfo> blocks, int quarter_turns) {
+  for (int turn{0}; turn < quarter_turns; ++turn)
+    for (auto& block : blocks)
       rotate_formation(block);
-    for (auto& block : formation.sides)
-      rotate_formation(block);
-  }
-  return formation;
+  return blocks;
 }
 
 // Positions in one z layer. Throws if the whole volume overflows 64 bits.
@@ -69,11 +68,11 @@ void print_header(const SearchRequest& request) {
 
 // Each top block divides coincidental matches by 4 and each side block by 2.
 // Says how much constraint is missing when the formation cannot be unique.
-void warn_if_weak(const SearchFormation& formation, const SearchBounds& bounds) {
+void warn_if_weak(std::span<const BlockInfo> formation, const SearchBounds& bounds) {
   const auto volume{static_cast<double>(bounds.nx()) * static_cast<double>(bounds.ny()) *
                     static_cast<double>(bounds.nz())};
-  const auto have_bits{2.0 * static_cast<double>(formation.tops.size()) +
-                       static_cast<double>(formation.sides.size())};
+  const auto sides{std::ranges::count_if(formation, &BlockInfo::is_side)};
+  const auto have_bits{2.0 * static_cast<double>(formation.size()) - static_cast<double>(sides)};
   const auto need_bits{std::log2(volume) + 6.64}; // at most ~0.01 expected coincidences
   if (need_bits <= have_bits)
     return;
@@ -129,7 +128,7 @@ void print_match(const MatchResult& match, int direction, bool name_direction) {
 
 class Session {
 public:
-  Session(const SearchRequest& request, const SearchFormation& formation, std::uint64_t layer_size)
+  Session(const SearchRequest& request, const std::vector<BlockInfo>& formation, std::uint64_t layer_size)
       : bounds_{request.bounds}
       , version_{request.version}
       , directions_{request.directions}
@@ -168,7 +167,7 @@ private:
 
   // Every direction is searched within each z slice. False if stopped early.
   [[nodiscard]] bool search_slice_first() {
-    std::vector<SearchFormation> formations;
+    std::vector<std::vector<BlockInfo>> formations;
     for (const int direction : directions_)
       formations.push_back(rotated(formation_, direction));
     const auto positions_per_layer{layer_size_ * directions_.size()};
@@ -292,7 +291,7 @@ private:
   SearchBounds bounds_;
   int version_;
   std::span<const int> directions_;
-  const SearchFormation& formation_;
+  const std::vector<BlockInfo>& formation_;
   std::uint64_t layer_size_;
   bool name_directions_;
   Checkpoint checkpoint_;
@@ -308,7 +307,7 @@ private:
 
 SearchOutcome run_search_session(const SearchRequest& request) {
   print_header(request);
-  const auto formation{split_by_face(request.formation)};
+  const auto formation{tops_first(request.formation)};
   const auto layer_size{checked_layer_size(request.bounds)};
   warn_if_weak(formation, request.bounds);
   Session session{request, formation, layer_size};

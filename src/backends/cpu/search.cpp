@@ -86,10 +86,7 @@ void search_chunks(Job& job, WorkerResult& result) {
 
 } // namespace
 
-DirectionResult run_search(const SearchBounds& bounds, const SearchFormation& formation, int version) {
-  // Tops first: a top check rejects 75% of candidates, a side check 50%.
-  auto blocks{formation.tops};
-  blocks.insert(blocks.end(), formation.sides.begin(), formation.sides.end());
+DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockInfo>& blocks, int version) {
   if (blocks.empty())
     throw std::invalid_argument{"empty formation"};
 
@@ -125,12 +122,7 @@ bool shared_search_enabled(int) {
   return false;
 }
 
-SharedSearchResult run_shared_search(const SearchBounds& bounds, std::span<const SearchFormation> formations,
-                                     int version) {
-  SharedSearchResult result;
-  for (const auto& formation : formations) {
-    result.directions.push_back(run_search(bounds, formation, version));
-    result.kernel_seconds += result.directions.back().kernel_seconds;
-  }
-  return result;
+SharedSearchResult run_shared_search(const SearchBounds& bounds,
+                                     std::span<const std::vector<BlockInfo>> directions, int version) {
+  return search_each_direction(bounds, directions, version);
 }

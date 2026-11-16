@@ -31,11 +31,6 @@ struct MatchResult {
   int x, y, z;
 };
 
-// A formation split by face type, as seen from one direction.
-struct SearchFormation {
-  std::vector<BlockInfo> tops, sides;
-};
-
 // A search that produces more matches than this has a formation far too small
 // to identify a location. Backends count every match but store only this many.
 constexpr unsigned int MAX_MATCHES{1u << 20};
@@ -55,10 +50,25 @@ struct SharedSearchResult {
 // "CPU", "CUDA" or "Metal".
 [[nodiscard]] std::string_view search_backend_name();
 
-[[nodiscard]] DirectionResult run_search(const SearchBounds& bounds, const SearchFormation& formation,
+// `blocks` is one direction's formation and must not be empty. Checks run in
+// the order given, so the session lists top faces first: they reject more.
+[[nodiscard]] DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockInfo>& blocks,
                                          int version);
 
 // True when the backend can search several directions in one pass.
 [[nodiscard]] bool shared_search_enabled(int version);
 [[nodiscard]] SharedSearchResult run_shared_search(const SearchBounds& bounds,
-                                                   std::span<const SearchFormation> formations, int version);
+                                                   std::span<const std::vector<BlockInfo>> directions,
+                                                   int version);
+
+// run_shared_search for a backend with no shared pass: one direction at a time.
+[[nodiscard]] inline SharedSearchResult
+search_each_direction(const SearchBounds& bounds, std::span<const std::vector<BlockInfo>> directions,
+                      int version) {
+  SharedSearchResult result;
+  for (const auto& blocks : directions) {
+    result.directions.push_back(run_search(bounds, blocks, version));
+    result.kernel_seconds += result.directions.back().kernel_seconds;
+  }
+  return result;
+}

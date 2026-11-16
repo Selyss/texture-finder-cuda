@@ -103,7 +103,8 @@ std::optional<SearchOutput> search(const SearchBounds& bounds,
     z_offset += slab.layout.nz;
   }
 
-  SearchOutput output{.kernel_seconds = timer.stop_seconds()};
+  SearchOutput output;
+  output.kernel_seconds = timer.stop_seconds();
   for (const auto& buffer : buffers)
     output.directions.push_back(buffer.matches.collect());
   return output;

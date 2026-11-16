@@ -203,14 +203,6 @@ using Kernel = void (*)(SearchBounds, int, Count, Count*, MatchResult*, Count*);
           .w = block.rotation | ((block.is_side ? 1 : 3) << 8)};
 }
 
-// Tops first: a top check rejects 75% of candidates and a side check 50%, so
-// the most selective checks run earliest.
-[[nodiscard]] std::vector<BlockInfo> tops_then_sides(const SearchFormation& formation) {
-  auto blocks{formation.tops};
-  blocks.insert(blocks.end(), formation.sides.begin(), formation.sides.end());
-  return blocks;
-}
-
 [[nodiscard]] Count checked_volume(const SearchBounds& bounds) {
   constexpr auto limit{std::numeric_limits<Count>::max()};
   const Count nx{bounds.nx()}, ny{bounds.ny()}, nz{bounds.nz()};
@@ -270,18 +262,15 @@ void trace(const char* message) {
 
 } // namespace
 
-DirectionResult run_search(const SearchBounds& bounds, const SearchFormation& formation, int version) {
-  if (formation.tops.size() > MAX_FORMATION_BLOCKS || formation.sides.size() > MAX_FORMATION_BLOCKS)
-    throw std::invalid_argument{"formation exceeds " + std::to_string(MAX_FORMATION_BLOCKS) +
-                                " blocks per face type"};
-  const std::vector<std::vector<BlockInfo>> blocks{tops_then_sides(formation)};
-  if (blocks.front().empty())
-    throw std::invalid_argument{"empty formation"};
+DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockInfo>& blocks, int version) {
+  if (blocks.empty() || blocks.size() > 2 * MAX_FORMATION_BLOCKS)
+    throw std::invalid_argument{"formation must have 1 to " + std::to_string(2 * MAX_FORMATION_BLOCKS) +
+                                " blocks"};
   const auto positions{checked_volume(bounds)};
 
   if (cuda_bitplanes::requested()) {
-    if (version == MODERN_VERSION && cuda_bitplanes::eligible(blocks.front())) {
-      if (auto output{cuda_bitplanes::search(bounds, blocks)}) {
+    if (version == MODERN_VERSION && cuda_bitplanes::eligible(blocks)) {
+      if (auto output{cuda_bitplanes::search(bounds, std::span{&blocks, 1})}) {
         trace("bitplanes");
         auto& result{output->directions.front()};
         result.kernel_seconds = output->kernel_seconds;
@@ -290,34 +279,30 @@ DirectionResult run_search(const SearchBounds& bounds, const SearchFormation& fo
     }
     trace("baseline fallback");
   }
-  return standard_search(bounds, blocks.front(), version, positions);
+  return standard_search(bounds, blocks, version, positions);
 }
 
 bool shared_search_enabled(int version) {
   return version == MODERN_VERSION && cuda_bitplanes::requested();
 }
 
-SharedSearchResult run_shared_search(const SearchBounds& bounds, std::span<const SearchFormation> formations,
-                                     int version) {
+SharedSearchResult run_shared_search(const SearchBounds& bounds,
+                                     std::span<const std::vector<BlockInfo>> directions, int version) {
   // Directions that can use bitplanes share one field. The rest run alone.
   std::vector<std::size_t> shared_indices;
   std::vector<std::vector<BlockInfo>> shared_blocks;
   if (shared_search_enabled(version)) {
-    for (std::size_t i{0}; i < formations.size(); ++i) {
-      const auto& formation{formations[i]};
-      if (formation.tops.size() > MAX_FORMATION_BLOCKS || formation.sides.size() > MAX_FORMATION_BLOCKS)
-        continue; // run_search reports the error
-      auto blocks{tops_then_sides(formation)};
-      if (cuda_bitplanes::eligible(blocks)) {
+    for (std::size_t i{0}; i < directions.size(); ++i) {
+      if (!directions[i].empty() && cuda_bitplanes::eligible(directions[i])) {
         shared_indices.push_back(i);
-        shared_blocks.push_back(std::move(blocks));
+        shared_blocks.push_back(directions[i]);
       }
     }
   }
 
   SharedSearchResult result;
-  result.directions.resize(formations.size());
-  std::vector<bool> done(formations.size(), false);
+  result.directions.resize(directions.size());
+  std::vector<bool> done(directions.size(), false);
   if (shared_blocks.size() > 1) {
     if (auto output{cuda_bitplanes::search(bounds, shared_blocks)}) {
       result.kernel_seconds += output->kernel_seconds;
@@ -329,10 +314,10 @@ SharedSearchResult run_shared_search(const SearchBounds& bounds, std::span<const
       }
     }
   }
-  for (std::size_t i{0}; i < formations.size(); ++i) {
+  for (std::size_t i{0}; i < directions.size(); ++i) {
     if (done[i])
       continue;
-    result.directions[i] = run_search(bounds, formations[i], version);
+    result.directions[i] = run_search(bounds, directions[i], version);
     result.kernel_seconds += result.directions[i].kernel_seconds;
   }
   return result;

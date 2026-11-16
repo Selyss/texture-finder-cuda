@@ -1,6 +1,5 @@
 #include "texture/formation_io.hpp"
 #include <fstream>
-#include <iostream>
 #include <map>
 #include <sstream>
 #include <stdexcept>
@@ -87,6 +86,5 @@ std::vector<BlockInfo> parse_formation_file(const std::string& filename) {
   if (formation.empty())
     throw std::runtime_error("No blocks in formation file: " + filename);
 
-  std::cout << formation.size() << " blocks read from formation file: " << filename << std::endl;
   return formation;
 }

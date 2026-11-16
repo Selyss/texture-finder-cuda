@@ -8,9 +8,10 @@
 #import <Metal/Metal.h>
 
 #include <algorithm>
-#include <cstdio>
-#include <cstdlib>
+#include <limits>
+#include <stdexcept>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -39,15 +40,10 @@ struct TfBlock {
   int x, y, z, w;
 };
 
-[[noreturn]] void fail(const char* what, NSError* err) {
-  std::fprintf(stderr, "Metal error: %s%s%s\n", what, err ? ": " : "",
-               err ? err.localizedDescription.UTF8String : "");
-  std::exit(2);
+[[noreturn]] void fail(const std::string& what, NSError* error) {
+  throw std::runtime_error{"Metal error: " + what +
+                           (error ? std::string{": "} + error.localizedDescription.UTF8String : "")};
 }
-
-} // namespace
-
-namespace {
 
 // Pipeline cache: run_search is called once per slice by the host-side
 // progress/checkpoint driver, and shader compilation costs ~100 ms — done
@@ -62,10 +58,8 @@ id<MTLComputePipelineState> ensure_pipeline(int version) {
 
   if (!s_device) {
     s_device = MTLCreateSystemDefaultDevice();
-    if (!s_device) {
-      std::fprintf(stderr, "No Metal device available; rebuild with `make BACKEND=cpu`\n");
-      std::exit(2);
-    }
+    if (!s_device)
+      throw std::runtime_error{"No Metal device available; rebuild with `make BACKEND=cpu`"};
     s_queue = [s_device newCommandQueue];
   }
 
@@ -90,117 +84,100 @@ id<MTLComputePipelineState> ensure_pipeline(int version) {
   return pso;
 }
 
+// One shared-storage buffer holding a single value the shader updates.
+template <class T>
+[[nodiscard]] T& contents_as(id<MTLBuffer> buffer) {
+  return *static_cast<T*>(buffer.contents);
+}
+
+[[nodiscard]] TfBlock shader_block(const BlockInfo& block) {
+  return {.x = block.x, .y = block.y, .z = block.z, .w = block.rotation | ((block.is_side ? 1 : 3) << 8)};
+}
+
 } // namespace
 
-DirectionResult run_search(const SearchBounds& bounds, const SearchFormation& formation, int version) {
-  const auto& tops_and_bottoms{formation.tops};
-  const auto& sides{formation.sides};
-  if (tops_and_bottoms.size() > MAX_FORMATION_BLOCKS || sides.size() > MAX_FORMATION_BLOCKS) {
-    std::fprintf(stderr, "Formation exceeds %d blocks per face type\n", MAX_FORMATION_BLOCKS);
-    std::exit(1);
-  }
+DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockInfo>& blocks, int version) {
+  if (blocks.empty())
+    throw std::invalid_argument{"empty formation"};
+  constexpr auto limit{std::numeric_limits<std::uint64_t>::max()};
+  const auto nx{bounds.nx()}, ny{bounds.ny()}, nz{bounds.nz()};
+  if (ny > limit / nz || nx > limit / (ny * nz))
+    throw std::invalid_argument{"search volume too large"};
 
-  std::vector<TfBlock> blocks;
-  blocks.reserve(tops_and_bottoms.size() + sides.size());
-  for (const auto& t : tops_and_bottoms)
-    blocks.push_back({t.x, t.y, t.z, t.rotation | (3 << 8)});
-  for (const auto& s : sides)
-    blocks.push_back({s.x, s.y, s.z, s.rotation | (1 << 8)});
-  if (blocks.empty()) {
-    std::fprintf(stderr, "Empty formation\n");
-    std::exit(1);
-  }
+  std::vector<TfBlock> shader_blocks;
+  for (const auto& block : blocks)
+    shader_blocks.push_back(shader_block(block));
 
-  const unsigned long long nx = (unsigned long long)((long long)bounds.x_max - bounds.x_min + 1);
-  const unsigned long long ny = (unsigned long long)((long long)bounds.y_max - bounds.y_min + 1);
-  const unsigned long long nz = (unsigned long long)((long long)bounds.z_max - bounds.z_min + 1);
-  if (ny > (~0ull) / nz || nx > (~0ull) / (ny * nz)) {
-    std::fprintf(stderr, "Search volume too large\n");
-    std::exit(1);
-  }
-
-  std::vector<MatchResult> matches;
-  unsigned long long total = 0;
-  float ms = 0.f;
-
+  DirectionResult result;
   @autoreleasepool {
-    id<MTLComputePipelineState> pso = ensure_pipeline(version);
-    id<MTLDevice> device = s_device;
-    id<MTLCommandQueue> queue = s_queue;
+    id<MTLComputePipelineState> pipeline = ensure_pipeline(version);
+    const auto shared_buffer = [](std::size_t bytes) {
+      return [s_device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+    };
+    id<MTLBuffer> block_buffer = [s_device newBufferWithBytes:shader_blocks.data()
+                                                       length:shader_blocks.size() * sizeof(TfBlock)
+                                                      options:MTLResourceStorageModeShared];
+    id<MTLBuffer> match_buffer = shared_buffer(MAX_MATCHES * sizeof(MatchResult));
+    id<MTLBuffer> written_buffer = shared_buffer(sizeof(unsigned int));
+    id<MTLBuffer> slice_count_buffer = shared_buffer(sizeof(unsigned int));
+    contents_as<unsigned int>(written_buffer) = 0;
 
-    id<MTLBuffer> b_blocks = [device newBufferWithBytes:blocks.data()
-                                                 length:blocks.size() * sizeof(TfBlock)
-                                                options:MTLResourceStorageModeShared];
-    id<MTLBuffer> b_out = [device newBufferWithLength:MAX_MATCHES * sizeof(MatchResult)
-                                              options:MTLResourceStorageModeShared];
-    id<MTLBuffer> b_write_idx = [device newBufferWithLength:sizeof(unsigned int)
-                                                    options:MTLResourceStorageModeShared];
-    id<MTLBuffer> b_slice = [device newBufferWithLength:sizeof(unsigned int)
-                                                options:MTLResourceStorageModeShared];
-    *(unsigned int*)b_write_idx.contents = 0;
+    // z layers per dispatch, chosen so one dispatch stays around a billion threads.
+    const auto layer{nx * ny};
+    const auto z_step{std::clamp<std::uint64_t>((std::uint64_t{1} << 30) / layer, 1, nz)};
 
-    // Slice depth chosen so one dispatch stays around a billion threads.
-    const unsigned long long per_layer = nx * ny;
-    unsigned long long z_step = per_layer > 0 ? (1ull << 30) / per_layer : nz;
-    if (z_step == 0)
-      z_step = 1;
-    if (z_step > nz)
-      z_step = nz;
+    const NSUInteger width{pipeline.threadExecutionWidth};
+    const NSUInteger group_limit{std::min<NSUInteger>(256, pipeline.maxTotalThreadsPerThreadgroup)};
+    const MTLSize group{MTLSizeMake(width, 1, std::max<NSUInteger>(1, group_limit / width))};
 
-    const NSUInteger tew = pso.threadExecutionWidth;
-    const NSUInteger max_tg = pso.maxTotalThreadsPerThreadgroup;
-    const MTLSize tg = MTLSizeMake(tew, 1, std::max<NSUInteger>(1, std::min<NSUInteger>(256, max_tg) / tew));
+    for (std::uint64_t z_done{0}; z_done < nz; z_done += z_step) {
+      const auto z_count{std::min(z_step, nz - z_done)};
+      const TfParams params{.x_min = bounds.x_min,
+                            .x_max = bounds.x_max,
+                            .y_min = bounds.y_min,
+                            .y_max = bounds.y_max,
+                            .z_max = bounds.z_max,
+                            .z_base = static_cast<int>(bounds.z_min + static_cast<std::int64_t>(z_done)),
+                            .total_blocks = static_cast<int>(shader_blocks.size()),
+                            .pad = 0};
+      contents_as<unsigned int>(slice_count_buffer) = 0;
 
-    for (unsigned long long z0 = 0; z0 < nz; z0 += z_step) {
-      const unsigned long long z_count = std::min(z_step, nz - z0);
-      TfParams P = {bounds.x_min,       bounds.x_max,
-                    bounds.y_min,       bounds.y_max,
-                    bounds.z_max,       (int)(bounds.z_min + (long long)z0),
-                    (int)blocks.size(), 0};
-      *(unsigned int*)b_slice.contents = 0;
-
-      id<MTLCommandBuffer> cb = [queue commandBuffer];
-      id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
-      [enc setComputePipelineState:pso];
-      [enc setBuffer:b_blocks offset:0 atIndex:0];
-      [enc setBytes:&P length:sizeof(P) atIndex:1];
-      [enc setBuffer:b_out offset:0 atIndex:2];
-      [enc setBuffer:b_write_idx offset:0 atIndex:3];
-      [enc setBuffer:b_slice offset:0 atIndex:4];
-      const MTLSize grid = MTLSizeMake((nx + tg.width - 1) / tg.width, (ny + tg.height - 1) / tg.height,
-                                       (z_count + tg.depth - 1) / tg.depth);
-      [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
-      [enc endEncoding];
-      [cb commit];
-      [cb waitUntilCompleted];
-      if (cb.error)
-        fail("command buffer failed", cb.error);
-      ms += (float)((cb.GPUEndTime - cb.GPUStartTime) * 1000.0);
-      total += *(unsigned int*)b_slice.contents;
+      id<MTLCommandBuffer> commands = [s_queue commandBuffer];
+      id<MTLComputeCommandEncoder> encoder = [commands computeCommandEncoder];
+      [encoder setComputePipelineState:pipeline];
+      [encoder setBuffer:block_buffer offset:0 atIndex:0];
+      [encoder setBytes:&params length:sizeof(params) atIndex:1];
+      [encoder setBuffer:match_buffer offset:0 atIndex:2];
+      [encoder setBuffer:written_buffer offset:0 atIndex:3];
+      [encoder setBuffer:slice_count_buffer offset:0 atIndex:4];
+      const MTLSize grid{MTLSizeMake((nx + group.width - 1) / group.width,
+                                     (ny + group.height - 1) / group.height,
+                                     (z_count + group.depth - 1) / group.depth)};
+      [encoder dispatchThreadgroups:grid threadsPerThreadgroup:group];
+      [encoder endEncoding];
+      [commands commit];
+      [commands waitUntilCompleted];
+      if (commands.error)
+        fail("command buffer failed", commands.error);
+      result.kernel_seconds += commands.GPUEndTime - commands.GPUStartTime;
+      result.total += contents_as<unsigned int>(slice_count_buffer);
     }
 
-    const unsigned int wrote = *(unsigned int*)b_write_idx.contents;
-    const unsigned int stored = std::min(wrote, MAX_MATCHES);
-    matches.assign((MatchResult*)b_out.contents, (MatchResult*)b_out.contents + stored);
+    const auto stored{std::min(contents_as<unsigned int>(written_buffer), MAX_MATCHES)};
+    const auto* first{static_cast<const MatchResult*>(match_buffer.contents)};
+    result.matches.assign(first, first + stored);
   }
 
-  std::sort(matches.begin(), matches.end(), [](const MatchResult& a, const MatchResult& b) {
-    return a.x != b.x ? a.x < b.x : (a.y != b.y ? a.y < b.y : a.z < b.z);
-  });
-  return {std::move(matches), total, total > MAX_MATCHES, ms / 1000.0};
+  result.truncated = result.total > MAX_MATCHES;
+  std::ranges::sort(result.matches, {}, [](const MatchResult& m) { return std::tuple{m.x, m.y, m.z}; });
+  return result;
 }
 
 bool shared_search_enabled(int) {
   return false;
 }
 
-SharedSearchResult run_shared_search(const SearchBounds& bounds, std::span<const SearchFormation> formations,
-                                     int version) {
-  SharedSearchResult result;
-  result.directions.resize(formations.size());
-  for (size_t i = 0; i < formations.size(); ++i) {
-    result.directions[i] = run_search(bounds, formations[i], version);
-    result.kernel_seconds += result.directions[i].kernel_seconds;
-  }
-  return result;
+SharedSearchResult run_shared_search(const SearchBounds& bounds,
+                                     std::span<const std::vector<BlockInfo>> directions, int version) {
+  return search_each_direction(bounds, directions, version);
 }

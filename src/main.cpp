@@ -68,8 +68,10 @@ struct UsageError : std::runtime_error {
     const auto version{parse_int(args[6], "version", 0, NUM_VERSIONS - 1)};
     auto directions{std::string_view{args[8]} == "all" ? std::vector{0, 1, 2, 3}
                                                        : std::vector{parse_int(args[8], "direction", 0, 3)}};
+    auto formation{parse_formation_file(args[7])};
+    std::cout << formation.size() << " blocks read from formation file: " << args[7] << std::endl;
     return {.bounds = bounds,
-            .formation = parse_formation_file(args[7]),
+            .formation = std::move(formation),
             .version = version,
             .directions = std::move(directions),
             .checkpoint_path = std::move(checkpoint_path)};
