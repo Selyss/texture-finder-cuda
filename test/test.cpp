@@ -10,6 +10,7 @@
 #include <vector>
 
 // The real headers the kernel compiles — not copies.
+#include "backends/cpu/row_filter.hpp"
 #include "bitplanes/match.hpp"
 #include "bitplanes/plan.hpp"
 #include "texture/formation.hpp"
@@ -409,15 +410,21 @@ TEST_CASE("bitplanes - field, filter and survivor check find exactly the brute-f
           for (int word = 0; word < layout.field_words; ++word)
             field.push_back(field_word(v, layout, y, z_index, word));
       prepare_plane_checks(layout, direction.checks, direction.offsets.data(), checks);
+      std::vector<Word> row_masks(static_cast<std::size_t>(layout.candidate_words));
 
       for (int y_row = 0; y_row < layout.ny; ++y_row)
         for (int z_row = 0; z_row < layout.nz; ++z_row)
           for (int word = 0; word < layout.candidate_words; ++word) {
+            if (word == 0)
+              cpu_bitplanes::filter_row(layout, checks.data(), direction.offsets.data(), field.data(),
+                                        static_cast<std::size_t>(y_row), static_cast<std::size_t>(z_row),
+                                        row_masks.data());
             const int y = layout.bounds.y_min + y_row, z = layout.bounds.z_min + z_row;
             const int coset = residue(z);
             const Word mask =
                 filter_word(layout, checks.data(), direction.offsets.data(), field.data(),
                             static_cast<std::size_t>(y_row), static_cast<std::size_t>(z_row), word);
+            REQUIRE(row_masks[word] == mask); // the CPU backend's row filter
             for (int bit = 0; bit < WORD_BITS; ++bit) {
               const int x = layout.bounds.x_min + word * WORD_BITS + bit;
               const bool survives = (mask >> bit) & 1;

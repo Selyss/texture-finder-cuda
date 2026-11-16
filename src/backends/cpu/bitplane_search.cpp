@@ -9,6 +9,7 @@
 #include <string_view>
 #include <thread>
 
+#include "backends/cpu/row_filter.hpp"
 #include "backends/cpu/worker_matches.hpp"
 #include "bitplanes/match.hpp"
 #include "bitplanes/plan.hpp"
@@ -108,10 +109,11 @@ private:
     }
   }
 
-  // Filters each candidate word against the field, then checks the survivors.
+  // Filters each row of candidate words against the field, then checks the survivors.
   void match(const Layout& layout, const DirectionPlan& direction, WorkerMatches& found) {
     checks_.resize(direction.checks.size());
     prepare_plane_checks(layout, direction.checks, direction.offsets.data(), checks_);
+    masks_.resize(static_cast<std::size_t>(layout.candidate_words));
 
     for (int y_row{0}; y_row < layout.ny; ++y_row) {
       const int y{layout.bounds.y_min + y_row};
@@ -119,10 +121,10 @@ private:
         const int z{layout.bounds.z_min + z_row};
         const int coset{residue(z)};
         const auto z_term{std::int64_t{z} * 116129781LL};
+        filter_row(layout, checks_.data(), direction.offsets.data(), field_.data(),
+                   static_cast<std::size_t>(y_row), static_cast<std::size_t>(z_row), masks_.data());
         for (int word{0}; word < layout.candidate_words; ++word) {
-          auto survivors{filter_word(layout, checks_.data(), direction.offsets.data(), field_.data(),
-                                     static_cast<std::size_t>(y_row), static_cast<std::size_t>(z_row), word)};
-          for (; survivors; survivors &= survivors - 1) {
+          for (auto survivors{masks_[word]}; survivors; survivors &= survivors - 1) {
             const int x{layout.bounds.x_min + word * WORD_BITS + std::countr_zero(survivors)};
             if (survivor_matches(job_.version, direction.verify.data(), direction.verify_offsets[coset],
                                  direction.verify_offsets[coset + 1],
@@ -138,6 +140,7 @@ private:
   std::vector<WorkerMatches> found_; // one per direction
   std::vector<Planes> field_;
   std::vector<PlaneCheck> checks_;
+  std::vector<Word> masks_; // one row of filter results
 };
 
 } // namespace

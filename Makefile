@@ -90,7 +90,7 @@ windows: $(COMMON_SRC) $(CUDA_SRC) $(COMMON_HEADERS) $(CUDA_HEADERS)
 # Host-only: compiles the exact headers the kernel uses, plus the parser,
 # against the doctest suite.
 TEST_SRC = test/test.cpp src/texture/formation_io.cpp $(BITPLANE_SRC)
-build/test: $(TEST_SRC) test/doctest.h $(COMMON_HEADERS) $(CUDA_HEADERS)
+build/test: $(TEST_SRC) test/doctest.h $(COMMON_HEADERS) $(CUDA_HEADERS) $(CPU_HEADERS)
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -Itest $(TEST_SRC) -o $@
 
