@@ -107,6 +107,6 @@ clean:
 .PHONY: all windows test tools clean
 
 # Standalone fixed-stride CUDA bitplane experiment.
-build/flat_cuda: experiments/rng-reduction/flat_cuda.cu $(CUDA_SRC) src/texture/formation_io.cpp $(COMMON_HEADERS) $(CUDA_HEADERS)
+build/flat_cuda: experiments/rng-reduction/flat_cuda.cu experiments/rng-reduction/diagnostic_kernels.cuh $(CUDA_SRC) src/texture/formation_io.cpp $(COMMON_HEADERS) $(CUDA_HEADERS)
 	@mkdir -p build
 	$(NVCC) $(NVCCFLAGS) -Xcompiler=-pthread $< $(CUDA_SRC) src/texture/formation_io.cpp -o $@

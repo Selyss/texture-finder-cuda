@@ -85,7 +85,7 @@ std::optional<SearchOutput> search(const SearchBounds& bounds,
   for (std::int64_t z_offset{0}; z_offset < nz;) {
     const auto slab{plan->slab(z_offset)};
     if (slab.field_words > 0) {
-      fill_planes<true, true><<<(slab.field_words + THREADS - 1) / THREADS, THREADS>>>(
+      fill_planes<<<(slab.field_words + THREADS - 1) / THREADS, THREADS>>>(
           slab.layout, plane_y.get(), slab.field_words, planes->get());
       cuda::check(cudaGetLastError());
     }
@@ -94,10 +94,9 @@ std::optional<SearchOutput> search(const SearchBounds& bounds,
       auto& buffer{buffers[i]};
       prepare_plane_checks(slab.layout, direction.checks, direction.offsets.data(), buffer.slab_checks);
       buffer.checks.upload(buffer.slab_checks);
-      match_words<MatchMode::Search, true, true><<<slab.match_blocks, THREADS>>>(
-          slab.layout, buffer.checks.get(), buffer.offsets.get(), planes->get(), nullptr, nullptr, 0,
-          buffer.verify.get(), buffer.verify_offsets.get(), buffer.matches.matches(), buffer.matches.count(),
-          MAX_MATCHES);
+      match_words<<<slab.match_blocks, THREADS>>>(
+          slab.layout, buffer.checks.get(), buffer.offsets.get(), planes->get(), buffer.verify.get(),
+          buffer.verify_offsets.get(), buffer.matches.matches(), buffer.matches.count(), MAX_MATCHES);
       cuda::check(cudaGetLastError());
     }
     z_offset += slab.layout.nz;

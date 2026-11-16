@@ -12,6 +12,7 @@
 #include <memory>
 #include <map>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -20,13 +21,18 @@
 #include <utility>
 #include <vector>
 
-#include "backends/cuda/bitplanes.cuh"
+#include "backends/cuda/bitplane_plan.hpp"
+#include "backends/cuda/bitplane_search.hpp"
+#include "backends/cuda/device.hpp"
+#include "diagnostic_kernels.cuh"
 #include "texture/formation_io.hpp"
 #include "texture/rotation.hpp"
 #include "texture/texture_rules.hpp"
 
 namespace {
 using namespace cuda_bitplanes;
+using namespace cuda_bitplanes::diagnostic;
+using cuda::DeviceArray;
 constexpr int SAMPLES = 9;
 using Counts = std::array<Word, STRIDE>;
 
@@ -62,140 +68,67 @@ unsigned int grid_size(size_t count) {
   return static_cast<unsigned int>(count);
 }
 
-void check_cuda(cudaError_t status) {
-  if (status != cudaSuccess)
-    throw std::runtime_error(cudaGetErrorString(status));
-}
-
-template <class T>
-class DeviceArray {
-public:
-  explicit DeviceArray(size_t count)
-      : bytes_(product(count, sizeof(T))) {
-    if (bytes_)
-      check_cuda(cudaMalloc(&data_, bytes_));
-  }
-
-  ~DeviceArray() {
-    if (data_)
-      cudaFree(data_);
-  }
-  DeviceArray(const DeviceArray&) = delete;
-  DeviceArray& operator=(const DeviceArray&) = delete;
-
-  T* get() const { return data_; }
-  void upload(const T* source) { check_cuda(cudaMemcpy(data_, source, bytes_, cudaMemcpyHostToDevice)); }
-  void download(T* destination) const {
-    check_cuda(cudaMemcpy(destination, data_, bytes_, cudaMemcpyDeviceToHost));
-  }
-  void download_prefix(T* destination, size_t count) const {
-    if (count)
-      check_cuda(cudaMemcpy(destination, data_, count * sizeof(T), cudaMemcpyDeviceToHost));
-  }
-
-private:
-  T* data_ = nullptr;
-  size_t bytes_;
-};
-
-class Event {
-public:
-  Event() { check_cuda(cudaEventCreate(&event_)); }
-  ~Event() { cudaEventDestroy(event_); }
-  Event(const Event&) = delete;
-  Event& operator=(const Event&) = delete;
-  cudaEvent_t get() const { return event_; }
-
-private:
-  cudaEvent_t event_;
-};
-
 template <class Launch>
 float time_kernel(Launch launch) {
-  Event start, stop;
-  check_cuda(cudaEventRecord(start.get()));
+  cuda::Timer timer;
   launch();
-  check_cuda(cudaGetLastError());
-  check_cuda(cudaEventRecord(stop.get()));
-  check_cuda(cudaEventSynchronize(stop.get()));
-  float ms = 0;
-  check_cuda(cudaEventElapsedTime(&ms, start.get(), stop.get()));
-  return ms;
+  cuda::check(cudaGetLastError());
+  return static_cast<float>(timer.stop_seconds() * 1000.0);
 }
 
+// Large enough that the planner never refuses a field. The harness sizes its own.
+constexpr size_t UNLIMITED_PLANE_BYTES = size_t{1} << 48;
+
+SearchPlan checked_plan(const SearchBounds& bounds, std::span<const std::vector<BlockInfo>> formations) {
+  auto plan = plan_search(bounds, formations, UNLIMITED_PLANE_BYTES);
+  if (!plan)
+    throw std::runtime_error("Experiment bounds are empty or exceed the supported integer range");
+  return std::move(*plan);
+}
+
+// The production plan for one direction of a search. The field covers every
+// formation passed in, so directions planned together can share it.
 struct Experiment {
-  Layout layout;
-  int min_z_offset, max_z_offset;
-  std::vector<int> plane_y;
+  SearchPlan plan;
+  DirectionPlan direction;
+  Layout layout; // the whole volume, before it is cut into slabs
   bool world_y;
-  std::vector<Check> checks;
-  std::array<int, STRIDE + 1> coset_offsets{};
-  std::vector<VerifyCheck> verify;
-  std::array<int, STRIDE + 1> verify_offsets{};
   const std::vector<BlockInfo>& formation;
 
-  Experiment(const SearchBounds& bounds, const std::vector<BlockInfo>& blocks, bool compact_y)
-      : world_y(compact_y)
-      , formation(blocks) {
-    const int nx = checked_int(static_cast<int64_t>(bounds.x_max) - bounds.x_min + 1);
-    const int ny = checked_int(static_cast<int64_t>(bounds.y_max) - bounds.y_min + 1);
-    const int nz = checked_int(static_cast<int64_t>(bounds.z_max) - bounds.z_min + 1);
-    if (nx <= 0 || ny <= 0 || nz <= 0)
-      throw std::runtime_error("Expected inclusive bounds in ascending order");
-
-    auto [min_x, max_x] = std::minmax_element(
-        formation.begin(), formation.end(), [](const BlockInfo& a, const BlockInfo& b) { return a.x < b.x; });
-    auto [min_z, max_z] = std::minmax_element(
-        formation.begin(), formation.end(), [](const BlockInfo& a, const BlockInfo& b) { return a.z < b.z; });
-    min_z_offset = min_z->z;
-    max_z_offset = max_z->z;
-    const int field_x = checked_int(static_cast<int64_t>(bounds.x_min) + min_x->x);
-    const int end_x = checked_int(static_cast<int64_t>(bounds.x_max) + max_x->x);
-    const int width = checked_int(static_cast<int64_t>(end_x) - field_x + 1);
-    checked_int(static_cast<int64_t>(bounds.z_min) + min_z_offset);
-    checked_int(static_cast<int64_t>(bounds.z_max) + max_z_offset);
-
-    std::vector<int> y_offsets;
-    for (const auto& block : formation) {
-      checked_int(static_cast<int64_t>(bounds.y_min) + block.y);
-      checked_int(static_cast<int64_t>(bounds.y_max) + block.y);
-      y_offsets.push_back(block.y);
-    }
-    std::sort(y_offsets.begin(), y_offsets.end());
-    y_offsets.erase(std::unique(y_offsets.begin(), y_offsets.end()), y_offsets.end());
-
-    if (world_y) {
-      plane_y = compact_levels(bounds, y_offsets);
-    } else
-      plane_y = y_offsets;
-
-    for (int coset = 0; coset < STRIDE; ++coset) {
-      for (const auto& block : formation) {
-        if (residue(-static_cast<int64_t>(block.z)) != coset) {
-          verify.push_back({static_cast<int64_t>(block.z) * 116129781LL,
-                            static_cast<uint32_t>(block.x) * 3129871u, block.y, block.rotation,
-                            block.is_side ? 1 : 3});
-          continue;
-        }
-        const int key = world_y ? bounds.y_min + block.y : block.y;
-        const int y_slot = std::lower_bound(plane_y.begin(), plane_y.end(), key) - plane_y.begin();
-        checks.push_back({block.x - min_x->x, y_slot, block.z, block.rotation, block.is_side});
+  Experiment(const SearchBounds& bounds, std::span<const std::vector<BlockInfo>> formations, size_t index,
+             bool compact_y)
+      : plan(checked_plan(bounds, formations))
+      , direction(plan.directions[index])
+      , world_y(compact_y)
+      , formation(formations[index]) {
+    if (!world_y) {
+      // The earlier field kept one level per block y offset and repeated it for every candidate y.
+      std::vector<int> y_offsets;
+      for (const auto& block : formation)
+        y_offsets.push_back(block.y);
+      std::sort(y_offsets.begin(), y_offsets.end());
+      y_offsets.erase(std::unique(y_offsets.begin(), y_offsets.end()), y_offsets.end());
+      for (auto& check : direction.checks) {
+        const int y_offset = plan.plane_y[check.y_slot] - bounds.y_min;
+        check.y_slot = std::lower_bound(y_offsets.begin(), y_offsets.end(), y_offset) - y_offsets.begin();
       }
-      coset_offsets[coset + 1] = static_cast<int>(checks.size());
-      verify_offsets[coset + 1] = static_cast<int>(verify.size());
+      plan.plane_y = y_offsets;
     }
     layout = {bounds,
-              nx,
-              ny,
-              nz,
-              field_x,
-              width,
-              ceil_div(width, WORD_BITS) + 1,
-              ceil_div(nx, WORD_BITS),
-              checked_int(plane_y.size()),
+              static_cast<int>(bounds.nx()),
+              static_cast<int>(bounds.ny()),
+              static_cast<int>(bounds.nz()),
+              plan.field_x,
+              plan.field_width,
+              plan.field_words,
+              plan.candidate_words,
+              checked_int(plan.plane_y.size()),
               0,
               0};
   }
+
+  Experiment(const SearchBounds& bounds, const std::vector<BlockInfo>& blocks, bool compact_y)
+      : Experiment(bounds, std::span{&blocks, 1}, 0, compact_y) {}
 
   size_t rows() const { return product(layout.ny, layout.nz); }
 };
@@ -263,40 +196,39 @@ Counts reference_counts(const Experiment& experiment, unsigned int threads, cons
 class DeviceExperiment {
 public:
   DeviceExperiment(const Experiment& experiment, int slab_rows, bool capture_masks,
-                   size_t capacity = MAX_MATCHES, bool precompute = false, bool own_field = true,
-                   const Experiment* field_source = nullptr)
-      : layout_(field_source ? field_source->layout : experiment.layout)
-      , min_z_offset_(field_source ? field_source->min_z_offset : experiment.min_z_offset)
-      , max_z_offset_(field_source ? field_source->max_z_offset : experiment.max_z_offset)
+                   size_t capacity = MAX_MATCHES, bool precompute = false, bool own_field = true)
+      : layout_(experiment.layout)
+      , plan_(experiment.plan)
       , slab_rows_(std::min(slab_rows, layout_.nz))
       , world_y_(experiment.world_y)
       , precompute_(precompute)
       , field_words_per_z_(product(product(world_y_ ? 1 : layout_.ny, layout_.y_slots), layout_.field_words))
       , field_capacity_(
             product(field_words_per_z_,
-                    (static_cast<int64_t>(slab_rows_) + max_z_offset_ - min_z_offset_ + STRIDE - 1) / STRIDE))
+                    (static_cast<int64_t>(slab_rows_) + plan_.max_z - plan_.min_z + STRIDE - 1) / STRIDE))
       , segments_(ceil_div(layout_.candidate_words, THREADS))
       , match_capacity_(grid_size(product(product(layout_.ny, slab_rows_), segments_)))
       , capacity_(capacity)
       , planes_(own_field ? field_capacity_ : 0)
-      , checks_(precompute ? 0 : experiment.checks.size())
-      , plane_checks_(precompute ? experiment.checks.size() : 0)
-      , slab_checks_(precompute ? experiment.checks.size() : 0)
+      , checks_(precompute ? 0 : experiment.direction.checks.size())
+      , plane_checks_(precompute ? experiment.direction.checks.size() : 0)
+      , slab_checks_(precompute ? experiment.direction.checks.size() : 0)
       , experiment_(experiment)
       , offsets_(STRIDE + 1)
-      , y_offsets_(experiment.plane_y.size())
+      , y_offsets_(experiment.plan.plane_y.size())
       , counts_(match_capacity_)
       , masks_(capture_masks ? product(experiment.rows(), layout_.candidate_words) : 0)
-      , verify_(experiment.verify.size())
+      , verify_(experiment.direction.verify.size())
       , verify_offsets_(STRIDE + 1)
       , matches_(capacity_)
       , total_matches_(1) {
+    plan_.slab_rows = slab_rows_;
     if (!precompute_)
-      checks_.upload(experiment.checks.data());
-    offsets_.upload(experiment.coset_offsets.data());
-    y_offsets_.upload(experiment.plane_y.data());
-    verify_.upload(experiment.verify.data());
-    verify_offsets_.upload(experiment.verify_offsets.data());
+      checks_.upload(experiment.direction.checks);
+    offsets_.upload(experiment.direction.offsets);
+    y_offsets_.upload(experiment.plan.plane_y);
+    verify_.upload(experiment.direction.verify);
+    verify_offsets_.upload(experiment.direction.verify_offsets);
   }
 
   SearchResult run(Sample& sample, Counts* survivor_counts = nullptr, MatchMode mode = MatchMode::Full,
@@ -307,6 +239,8 @@ public:
     std::vector<unsigned int> host_counts;
     if (survivor_counts && mode == MatchMode::NoTail)
       throw std::logic_error("No-tail mode does not produce block counts");
+    if (precompute_ && mode == MatchMode::NoMemory)
+      throw std::logic_error("Synthetic words are only wired into the unprecomputed filter");
     if (survivor_counts) {
       survivor_counts->fill(0);
       host_counts.resize(match_capacity_);
@@ -325,22 +259,11 @@ public:
     return results();
   }
 
-  void reset_results() { check_cuda(cudaMemset(total_matches_.get(), 0, sizeof(Word))); }
+  void reset_results() { total_matches_.zero(); }
   const Planes* field() const { return planes_.get(); }
 
-  Layout slab_at(int offset) const {
-    Layout slab = layout_;
-    slab.nz = std::min(slab_rows_, layout_.nz - offset);
-    slab.bounds.z_min = layout_.bounds.z_min + offset;
-    slab.bounds.z_max = slab.bounds.z_min + (slab.nz - 1);
-    // The halo supplies block lookups across slab boundaries. Candidates stay disjoint.
-    const int64_t halo_start = static_cast<int64_t>(slab.bounds.z_min) + min_z_offset_;
-    const int64_t halo_end = static_cast<int64_t>(slab.bounds.z_max) + max_z_offset_;
-    slab.first_hashed_z = halo_start + residue(-halo_start);
-    slab.hashed_rows =
-        slab.first_hashed_z <= halo_end ? static_cast<int>((halo_end - slab.first_hashed_z) / STRIDE + 1) : 0;
-    return slab;
-  }
+  // The production slab at this z offset, cut to the harness's own slab height.
+  Layout slab_at(int offset) const { return plan_.slab(offset).layout; }
 
   float fill_slab(const Layout& slab, bool pack32 = false) {
     const size_t field_count = field_words_per_z_ * slab.hashed_rows;
@@ -348,11 +271,12 @@ public:
     if (fill_grid)
       return time_kernel([&] {
         if (pack32)
-          fill_planes<true, true><<<fill_grid, THREADS>>>(slab, y_offsets_.get(), field_count, planes_.get());
+          fill_planes<<<fill_grid, THREADS>>>(slab, y_offsets_.get(), field_count, planes_.get());
         else if (world_y_)
-          fill_planes<true><<<fill_grid, THREADS>>>(slab, y_offsets_.get(), field_count, planes_.get());
+          fill_planes_plain<true><<<fill_grid, THREADS>>>(slab, y_offsets_.get(), field_count, planes_.get());
         else
-          fill_planes<false><<<fill_grid, THREADS>>>(slab, y_offsets_.get(), field_count, planes_.get());
+          fill_planes_plain<false><<<fill_grid, THREADS>>>(slab, y_offsets_.get(), field_count,
+                                                           planes_.get());
       });
     return 0;
   }
@@ -367,8 +291,9 @@ public:
     if (masks)
       masks += static_cast<size_t>(offset) * slab.candidate_words;
     if (precompute_) {
-      prepare_plane_checks(slab, experiment_.checks, experiment_.coset_offsets.data(), slab_checks_);
-      plane_checks_.upload(slab_checks_.data());
+      prepare_plane_checks(slab, experiment_.direction.checks, experiment_.direction.offsets.data(),
+                           slab_checks_);
+      plane_checks_.upload(slab_checks_);
     }
     return time_kernel([&] {
       if (world_y_)
@@ -380,8 +305,7 @@ public:
 
   void tally_slab(const Layout& slab, std::vector<unsigned int>& host_counts, Counts& counts) {
     const auto grid = blocks_in_slab(slab);
-    host_counts.resize(grid);
-    counts_.download_prefix(host_counts.data(), grid);
+    host_counts = counts_.download(grid);
     for (size_t block = 0; block < grid; ++block) {
       const int z = slab.bounds.z_min + static_cast<int>((block / segments_) % slab.nz);
       counts[residue(z)] += host_counts[block];
@@ -390,15 +314,14 @@ public:
 
   SearchResult results() {
     SearchResult result;
-    total_matches_.download(&result.total);
-    result.matches.resize(std::min<Word>(capacity_, result.total));
-    matches_.download_prefix(result.matches.data(), result.matches.size());
+    result.total = total_matches_.download(1).front();
+    result.matches = matches_.download(std::min<Word>(capacity_, result.total));
     std::sort(result.matches.begin(), result.matches.end(),
               [](const auto& a, const auto& b) { return std::tie(a.x, a.y, a.z) < std::tie(b.x, b.y, b.z); });
     return result;
   }
 
-  void download_masks(Word* out) const { masks_.download(out); }
+  std::vector<Word> masks() const { return masks_.download(masks_.size()); }
   size_t plane_bytes() const { return planes_.get() ? field_capacity_ * sizeof(Planes) : 0; }
   int slab_count() const { return ceil_div(layout_.nz, slab_rows_); }
 
@@ -408,13 +331,13 @@ private:
     const auto launch = [&](auto tag) {
       if constexpr (WorldY) {
         if (precompute_) {
-          match_words<decltype(tag)::value, true, true><<<grid, THREADS>>>(
+          match_words_probe<decltype(tag)::value, true, true><<<grid, THREADS>>>(
               slab, plane_checks_.get(), offsets_.get(), field, counts_.get(), masks, layout_.nz,
               verify_.get(), verify_offsets_.get(), matches_.get(), total_matches_.get(), capacity_);
           return;
         }
       }
-      match_words<decltype(tag)::value, WorldY><<<grid, THREADS>>>(
+      match_words_probe<decltype(tag)::value, WorldY><<<grid, THREADS>>>(
           slab, checks_.get(), offsets_.get(), field, counts_.get(), masks, layout_.nz, verify_.get(),
           verify_offsets_.get(), matches_.get(), total_matches_.get(), capacity_);
     };
@@ -441,7 +364,8 @@ private:
   }
 
   Layout layout_;
-  int min_z_offset_, max_z_offset_, slab_rows_;
+  SearchPlan plan_;
+  int slab_rows_;
   bool world_y_, precompute_;
   size_t field_words_per_z_, field_capacity_;
   int segments_;
@@ -501,6 +425,18 @@ SearchResult baseline_search(const SearchBounds& bounds, const std::vector<Block
   return {std::move(result.matches), result.total};
 }
 
+// The backend's own bitplane search, planned and launched as the CLI runs it.
+void expect_production(const SearchBounds& bounds, std::span<const std::vector<BlockInfo>> formations,
+                       std::span<const SearchResult> expected) {
+  const auto output = cuda_bitplanes::search(bounds, formations);
+  if (!output)
+    throw std::runtime_error("Production bitplane search did not fit in memory");
+  for (size_t i = 0; i < formations.size(); ++i) {
+    const Experiment experiment(bounds, formations[i], true);
+    compare_results({output->directions[i].matches, output->directions[i].total}, expected[i], experiment);
+  }
+}
+
 void verify_small_case(bool world_y, int candidate_levels, bool sparse_levels, bool precompute = false) {
   // Two x words plus a partial word, mixed faces, unaligned and multiword offsets,
   // negative coordinates, and a z interval covering every coset twice.
@@ -522,25 +458,23 @@ void verify_small_case(bool world_y, int candidate_levels, bool sparse_levels, b
   }
   const Experiment experiment(bounds, formation, world_y);
   const size_t expected_levels = candidate_levels == 1 ? 4 : 11;
-  if (world_y && sparse_levels && experiment.plane_y.size() != expected_levels)
+  if (world_y && sparse_levels && experiment.plan.plane_y.size() != expected_levels)
     throw std::runtime_error("Unexpected compact level count for sparse offsets");
   DeviceExperiment device(experiment, sparse_levels ? 1 : 5, true, MAX_MATCHES, precompute);
   Sample sample{};
   Counts survivors;
   const auto actual = device.run(sample, &survivors);
-  std::vector<Word> masks(experiment.rows() * experiment.layout.candidate_words);
-  device.download_masks(masks.data());
-  if (survivors != reference_counts(experiment, 1, masks.data()))
+  if (survivors != reference_counts(experiment, 1, device.masks().data()))
     throw std::runtime_error("GPU/CPU count mismatch on the small case");
   const auto expected = baseline_search(bounds, tops, sides, sample.baseline);
   compare_results(actual, expected, experiment);
+  expect_production(bounds, std::span{&formation, 1}, std::span{&expected, 1});
   if (std::none_of(actual.matches.begin(), actual.matches.end(),
                    [&](const auto& match) { return same_match(match, known); }))
     throw std::runtime_error("Prototype missed the known synthetic match");
   for (const auto mode : {MatchMode::Filter, MatchMode::Div32, MatchMode::NoTail}) {
     device.run(sample, nullptr, mode);
-    device.download_masks(masks.data());
-    reference_counts(experiment, 1, masks.data());
+    reference_counts(experiment, 1, device.masks().data());
   }
   std::puts("PASS small GPU/CPU masks and exact matches across slab boundaries");
   if (sparse_levels)
@@ -548,7 +482,7 @@ void verify_small_case(bool world_y, int candidate_levels, bool sparse_levels, b
 
   const std::vector<BlockInfo> single{{0, 0, 0, 0, false}};
   const Experiment dense(bounds, single, world_y);
-  if (world_y && dense.plane_y.size() != static_cast<size_t>(candidate_levels))
+  if (world_y && dense.plan.plane_y.size() != static_cast<size_t>(candidate_levels))
     throw std::runtime_error("Unexpected compact level count for one offset");
   constexpr size_t small_capacity = 3;
   DeviceExperiment limited(dense, 1, false, small_capacity, precompute);
@@ -648,28 +582,18 @@ struct DirectionTiming {
 void compare_shared_field(const SearchBounds& bounds, const std::vector<BlockInfo>& formation, int slab_rows,
                           bool check_masks) {
   constexpr int directions = 4;
-  std::array<std::vector<BlockInfo>, directions> rotated;
-  auto blocks = formation;
-  std::vector<BlockInfo> union_blocks;
-  for (auto& direction : rotated) {
-    direction = blocks;
-    union_blocks.insert(union_blocks.end(), blocks.begin(), blocks.end());
-    for (auto& block : blocks)
-      rotate_block(block);
-  }
-  const Experiment union_field(bounds, union_blocks, true);
+  std::array<std::vector<BlockInfo>, directions> turned;
+  for (int dir = 0; dir < directions; ++dir)
+    turned[dir] = rotated(formation, dir);
   std::array<std::optional<Experiment>, directions> independent, shared;
   std::array<SearchResult, directions> expected;
   std::array<Counts, directions> counts;
   std::array<std::vector<Word>, directions> masks;
   std::array<size_t, directions> individual_bytes{};
   for (int dir = 0; dir < directions; ++dir) {
-    const auto& direction = rotated[dir];
+    const auto& direction = turned[dir];
     independent[dir].emplace(bounds, direction, true);
-    shared[dir].emplace(bounds, direction, true);
-    for (auto& check : shared[dir]->checks)
-      check.x_offset = checked_int(static_cast<int64_t>(check.x_offset) + shared[dir]->layout.field_x -
-                                   union_field.layout.field_x);
+    shared[dir].emplace(bounds, turned, dir, true);
     const auto side = std::find_if(direction.begin(), direction.end(),
                                    [](const BlockInfo& block) { return block.is_side; });
     float baseline_ms = 0;
@@ -679,11 +603,12 @@ void compare_shared_field(const SearchBounds& bounds, const std::vector<BlockInf
     compare_results(device.run(sample, &counts[dir]), expected[dir], *independent[dir]);
     individual_bytes[dir] = device.plane_bytes();
     if (check_masks) {
-      masks[dir].resize(independent[dir]->rows() * independent[dir]->layout.candidate_words);
-      device.download_masks(masks[dir].data());
+      masks[dir] = device.masks();
       reference_counts(*independent[dir], 1, masks[dir].data());
     }
   }
+
+  expect_production(bounds, turned, expected);
 
   const auto run = [&](bool reuse, bool validate) {
     using Clock = std::chrono::steady_clock;
@@ -693,14 +618,14 @@ void compare_shared_field(const SearchBounds& bounds, const std::vector<BlockInf
       std::array<std::unique_ptr<DeviceExperiment>, directions> devices;
       for (int dir = 0; dir < directions; ++dir) {
         devices[dir] = std::make_unique<DeviceExperiment>(*shared[dir], slab_rows, validate && check_masks,
-                                                          MAX_MATCHES, true, dir == 0, &union_field);
+                                                          MAX_MATCHES, true, dir == 0);
         devices[dir]->reset_results();
       }
       auto& owner = *devices.front();
       const auto mode = validate ? MatchMode::Full : MatchMode::Search;
       std::array<Counts, directions> actual_counts{};
       std::vector<unsigned int> scratch;
-      for (int offset = 0; offset < union_field.layout.nz;) {
+      for (int offset = 0; offset < shared[0]->layout.nz;) {
         const auto slab = owner.slab_at(offset);
         time.fill += owner.fill_slab(slab);
         for (int dir = 0; dir < directions; ++dir) {
@@ -715,9 +640,7 @@ void compare_shared_field(const SearchBounds& bounds, const std::vector<BlockInf
         if (validate && actual_counts[dir] != counts[dir])
           throw std::runtime_error("Shared field changed survivor counts");
         if (validate && check_masks) {
-          std::vector<Word> actual(masks[dir].size());
-          devices[dir]->download_masks(actual.data());
-          if (actual != masks[dir])
+          if (devices[dir]->masks() != masks[dir])
             throw std::runtime_error("Shared field changed a survivor mask");
         }
       }
@@ -944,15 +867,14 @@ public:
       , counts_(STRIDE)
       , output_(MAX_MATCHES)
       , total_(1) {
-    filters_.upload(experiment.filters.data());
-    if (!experiment.verify.empty())
-      verify_.upload(experiment.verify.data());
+    filters_.upload(experiment.filters);
+    verify_.upload(experiment.verify);
   }
 
   template <MatchMode Mode>
   float run() {
-    check_cuda(cudaMemset(total_.get(), 0, sizeof(Word)));
-    check_cuda(cudaMemset(counts_.get(), 0, STRIDE * sizeof(Word)));
+    total_.zero();
+    counts_.zero();
     const auto& layout = experiment_.layout;
     const size_t work = product(layout.words, experiment_.grid_rows);
     if (!work)
@@ -965,9 +887,8 @@ public:
 
   SearchResult results() const {
     SearchResult result;
-    total_.download(&result.total);
-    result.matches.resize(std::min<Word>(result.total, MAX_MATCHES));
-    output_.download_prefix(result.matches.data(), result.matches.size());
+    result.total = total_.download(1).front();
+    result.matches = output_.download(std::min<Word>(result.total, MAX_MATCHES));
     std::sort(result.matches.begin(), result.matches.end(),
               [](const auto& a, const auto& b) { return std::tie(a.x, a.y, a.z) < std::tie(b.x, b.y, b.z); });
     return result;
@@ -975,13 +896,13 @@ public:
 
   Counts counts() const {
     Counts result;
-    counts_.download(result.data());
+    const auto values = counts_.download(STRIDE);
+    std::copy(values.begin(), values.end(), result.begin());
     return result;
   }
 
   void compare_masks() const {
-    std::vector<Word> masks(experiment_.mask_words());
-    masks_.download(masks.data());
+    const auto masks = masks_.download(experiment_.mask_words());
     const auto& layout = experiment_.layout;
     const auto& b = layout.bounds;
     size_t index = 0;
@@ -1150,8 +1071,8 @@ void compare_packing(const SearchBounds& bounds, const std::vector<BlockInfo>& f
     std::vector<Planes> a(chunk), b(chunk);
     for (size_t i = 0; i < count; i += chunk) {
       const auto n = std::min(chunk, count - i);
-      check_cuda(cudaMemcpy(a.data(), original.field() + i, n * sizeof(Planes), cudaMemcpyDeviceToHost));
-      check_cuda(cudaMemcpy(b.data(), packed.field() + i, n * sizeof(Planes), cudaMemcpyDeviceToHost));
+      cuda::check(cudaMemcpy(a.data(), original.field() + i, n * sizeof(Planes), cudaMemcpyDeviceToHost));
+      cuda::check(cudaMemcpy(b.data(), packed.field() + i, n * sizeof(Planes), cudaMemcpyDeviceToHost));
       for (size_t j = 0; j < n; ++j)
         if (a[j].low != b[j].low || a[j].high != b[j].high)
           throw std::runtime_error("32-bit packing changed a plane word");
@@ -1242,6 +1163,9 @@ int main(int argc, char** argv) {
   }
 
   try {
+    // run_search is the baseline every experiment is compared with, so it must
+    // stay on the standard kernel. The production bitplanes are called directly.
+    setenv("TF_CUDA_BITPLANES", "0", 1);
     const SearchBounds bounds{parse_int(argv[2]), parse_int(argv[3]), parse_int(argv[4]),
                               parse_int(argv[5]), parse_int(argv[6]), parse_int(argv[7])};
     const int threads = argc >= 9 ? parse_int(argv[8]) : 1;
@@ -1278,8 +1202,7 @@ int main(int argc, char** argv) {
             get_texture_modern(1 + block.x, block.y, -2 + block.z, block.is_side ? MOD_SIDE : MOD_TOP_BOTTOM);
       compare_shared_field(small, synthetic, 1, true);
       for (int dir = 1; dir < 4; ++dir) {
-        for (auto& block : synthetic)
-          rotate_block(block);
+        synthetic = rotated(std::move(synthetic), 1);
         compare_shared_field(small, synthetic, 5, true);
       }
       std::puts("PASS shared masks match independent GPU fields and CPU on synthetic slabs");
@@ -1319,6 +1242,8 @@ int main(int argc, char** argv) {
     };
     Sample warmup{};
     const auto reference = baseline(warmup);
+    expect_production(bounds, std::span{&formation, 1}, std::span{&reference, 1});
+    std::puts("PASS production bitplane search matches the standard kernel");
     Counts counts;
     {
       DeviceExperiment device(experiment, slab_rows, false);
