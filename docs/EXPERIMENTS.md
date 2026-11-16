@@ -1835,3 +1835,72 @@ not measurably change the standard kernel.
 | `src/backends/cuda/search.cu` | `3b2838e24a3023d223c5a420eeb8fafb99bc1c932e5423f18370922d703087b5` |
 | `src/backends/cuda/bitplanes.cuh` | `2415cf8c52d1ac0b8558106fe36536412be0fda9f994634b8a1f6db73b855fd1` |
 | `experiments/rng-reduction/flat_cuda.cu` | `74c524540d5bcf2f800b8f78689b28a180adeca18da948384cb8372b578f109c` |
+
+### One bitplane implementation and bitplanes by default (jobs 9462804 and 9463175)
+
+The diagnostic match modes and the unpacked fill moved out of
+`src/backends/cuda/bitplanes.cuh` into
+`experiments/rng-reduction/diagnostic_kernels.cuh`. The production header now
+holds one fill kernel, the filter (`filter_word`), the survivor check
+(`verify_survivors`) and one match kernel, without mode templates. The
+precomputed diagnostic variants call the production filter and survivor
+check. The harness builds its plan and slabs from `plan_search` and
+`SearchPlan::slab`, uses the shared `cuda::DeviceArray`, `cuda::check` and
+`cuda::Timer`, and compares the backend's own `cuda_bitplanes::search` with
+the standard kernel in its default, small-case and shared-field runs.
+
+In the same tree, version 0 searches on CUDA use bitplanes unless
+`TF_CUDA_BITPLANES=0`. `rotate_formation` became `rotate_block`, with one
+`rotated(formation, quarter_turns)` in `src/texture/rotation.hpp`. The CI
+smoke run reads its bounds from the fixture's expected-match file.
+`test/validate_cuda.sh` gained a gate that `TF_CUDA_BITPLANES=0` keeps the
+standard kernel and an opt-in `HARNESS_MODES` switch that runs the harness
+experiment modes.
+
+Job `9462804` on `ng10803` ran the first half of this (kernel move and
+planner) and failed one gate: the harness did not link, because the
+production kernels had become non-template functions in a header that two
+translation units compile. Its other 20 gates passed, with one-direction
+medians of 0.681990 s standard and 0.125203 s bitplanes. The kernels are now
+`static`.
+
+Job `9463175` on `ng31302` ran the whole tree, uncommitted on top of
+`1d2b9e6`, with one A100-SXM4-40GB, driver 580.178.04, `gcc/12.3`, CUDA 12.9
+and `sm_80`. All 29 gates passed: the 21 build and CLI gates, the harness
+default run, and the `DUPLICATE_Y`, `COMPARE_OFFSETS`, `COMPARE_PACKING`,
+`COMPARE_PACKING_SEARCH`, `SHARED_FIELD`, `FUSED` and `DIAGNOSTICS` modes.
+
+Median CLI kernel time over five alternating pairs, in seconds:
+
+| Workload | Standard (`TF_CUDA_BITPLANES=0`) | Bitplanes (default) |
+|---|---:|---:|
+| one direction | 0.681605 | 0.125157 |
+| all directions | 2.724700 | 0.334556 |
+
+Bitplane medians in job `9454100`, before the kernels were slimmed, were
+0.126295 s and 0.339082 s on `ng31205`. The two jobs ran on different nodes,
+so the 1 to 5 ms difference is not attributed to the change.
+
+The harness modes also give the current stage costs on W for one direction.
+These are medians of nine CUDA event samples in milliseconds, from separate
+modes of the same job:
+
+| Stage | Median (ms) | Source |
+|---|---:|---|
+| Fill, one bit per iteration | 67.714 | `PACK_SEARCH` |
+| Fill, 32-bit packing (production) | 55.828 | `PACK_SEARCH` |
+| Filter alone, precomputed offsets | 50.796 | `OFFSET_PAIR` |
+| Filter and survivor check (production) | 72.533 | `OFFSET_PAIR` |
+| Four directions, matching only, shared field | 291.655 | `SHARED_PAIR` |
+
+The filter-alone figure comes from the `NoTail` variant, which is compiled
+separately from the production match, so the 21.7 ms difference estimates
+the survivor check and is not a direct measurement of it. Survivors per
+direction on W were 469,959,730 / 524,915,462 / 469,968,620 / 524,899,371.
+In each direction one z coset holds 390.6 million of them.
+
+| Source | SHA-256 |
+|---|---|
+| `src/backends/cuda/search.cu` | `095179f2cf3ac7253918bd83ba59ce54e212ef3562b442f7161ea3294a677755` |
+| `src/backends/cuda/bitplanes.cuh` | `cf46089821ab39c5300fcc43e8a2ec46c4b4f0631b5bec5b5afd9ae69af5951d` |
+| `experiments/rng-reduction/flat_cuda.cu` | `96a0b3c691e4a91d6ab050e354dc35e4e2e14467194cb0c57419ca831e65a9d5` |
