@@ -1780,3 +1780,32 @@ Bitplane medians were 0.126441 s and 0.338644 s, against 0.126468 s and
 | `src/backends/cuda/search.cu` | `bba95149d223aa68f157e6d69ffff25fe33c8b61811773abd0be5b08de891aea` |
 | `src/backends/cuda/bitplanes.cuh` | `0a2af73983360f55691a1227ac93a9fe6fc3fefd2ae7656573360bc19eb44709` |
 | `experiments/rng-reduction/flat_cuda.cu` | `c9d14beee37789cb16b885888cf196ddb6955e195facb2058c9ada28ba2d45a7` |
+
+### CUDA backend split on Narval A100 (jobs 9453126 and 9453658)
+
+The CUDA backend was split into scoped device owners (`device.hpp`,
+`match_buffer.hpp`), a host-only planner with unit tests
+(`bitplane_plan.hpp`), and the bitplane executor (`bitplane_search.cu`). The
+kernels were not changed. Job `9453126` ran `test/validate_cuda.sh` on that
+tree on `ng31006`. Job `9453658` ran it on `ng31302` after a second pass that
+gives backends one block list per direction and makes a failed GPU call throw.
+Both used one A100-SXM4-40GB, `gcc/12.3`, CUDA 12.9 and `-std=c++20`
+targeting `sm_80`, and both passed all 21 gates.
+
+Median CLI kernel time over five alternating pairs, in seconds:
+
+| Job | Workload | Standard | Bitplanes |
+|---|---|---:|---:|
+| 9453126 | one direction | 0.682276 | 0.126245 |
+| 9453126 | all directions | 2.727830 | 0.338771 |
+| 9453658 | one direction | 0.681322 | 0.126140 |
+| 9453658 | all directions | 2.724870 | 0.338569 |
+
+Bitplane medians in job `9446997`, before the split, were 0.126441 s and
+0.338644 s.
+
+| Source in job 9453658 | SHA-256 |
+|---|---|
+| `src/backends/cuda/search.cu` | `04d996bbbe1873969af41260dfe9c74f205a3a9284867a024d2423fe57f461e2` |
+| `src/backends/cuda/bitplanes.cuh` | `2415cf8c52d1ac0b8558106fe36536412be0fda9f994634b8a1f6db73b855fd1` |
+| `experiments/rng-reduction/flat_cuda.cu` | `3072d8c6f6a4cddec48efda1932a7051bfc209f0732aa53df538798cd10c0e9b` |
