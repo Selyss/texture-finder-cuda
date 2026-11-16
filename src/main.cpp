@@ -1,97 +1,106 @@
+#include <charconv>
 #include <chrono>
+#include <cstdint>
 #include <iostream>
+#include <span>
 #include <stdexcept>
 #include <string>
-#include <vector>
+#include <string_view>
 
-#include "texture/formation_io.hpp"
 #include "search/session.hpp"
+#include "texture/formation_io.hpp"
 
 namespace {
 
-// Coordinates are validated against the world border plus slack; this also
-// guarantees the kernel's grid-stride arithmetic cannot overflow int.
-constexpr long long COORD_LIMIT = 30'001'000;
-constexpr long long Y_LIMIT = 20'000;
+// The world border plus slack. Staying inside it also keeps the backends'
+// index arithmetic within int.
+constexpr std::int64_t COORD_LIMIT{30'001'000};
+constexpr std::int64_t Y_LIMIT{20'000};
 
-void usage(const char* prog) {
-  std::cerr << "Usage: " << prog
-            << " <x_min> <x_max> <y_min> <y_max> <z_min> <z_max> <version> <file> <direction>"
-            << " [--checkpoint <state-file>]\n"
-            << "  version:   0 = 1.21.2+, 1 = 1.13 - 1.21.1, 2 = <=1.12.2,\n"
-            << "             3 = Sodium 1.0-4.1 (MC 1.16-1.18.2), 4 = Sodium 4.2-4.8 (MC 1.19-1.19.3)\n"
-            << "  direction: 0 = North, 1 = West, 2 = South, 3 = East, or 'all' to search\n"
-            << "             every orientation and report which one matched\n"
-            << "  --checkpoint: persist progress after every slice; rerunning the same\n"
-            << "             command resumes an interrupted search from the saved state\n";
+constexpr std::string_view USAGE{
+    " <x_min> <x_max> <y_min> <y_max> <z_min> <z_max> <version> <file> <direction>"
+    " [--checkpoint <state-file>]\n"
+    "  version:   0 = 1.21.2+, 1 = 1.13 - 1.21.1, 2 = <=1.12.2,\n"
+    "             3 = Sodium 1.0-4.1 (MC 1.16-1.18.2), 4 = Sodium 4.2-4.8 (MC 1.19-1.19.3)\n"
+    "  direction: 0 = North, 1 = West, 2 = South, 3 = East, or 'all' to search\n"
+    "             every orientation and report which one matched\n"
+    "  --checkpoint: persist progress after every slice; rerunning the same\n"
+    "             command resumes an interrupted search from the saved state\n"};
+
+struct UsageError : std::runtime_error {
+  using std::runtime_error::runtime_error;
+};
+
+[[nodiscard]] int parse_int(std::string_view text, std::string_view name, std::int64_t min,
+                            std::int64_t max) {
+  std::int64_t value{};
+  const auto digits{text.starts_with('+') ? text.substr(1) : text}; // from_chars rejects a plus sign
+  const auto* const end{digits.data() + digits.size()};
+  const auto [parsed_to, error]{std::from_chars(digits.data(), end, value)};
+  if (error != std::errc{} || parsed_to != end)
+    throw UsageError{std::string{name} + " is not a number: " + std::string{text}};
+  if (value < min || value > max)
+    throw UsageError{std::string{name} + " must be in [" + std::to_string(min) + ", " + std::to_string(max) +
+                     "], got " + std::string{text}};
+  return static_cast<int>(value);
 }
 
-int parse_int_arg(const std::string& arg, const char* name, long long lo, long long hi) {
-  long long v;
-  size_t pos = 0;
-  try {
-    v = std::stoll(arg, &pos);
-  } catch (const std::exception&) {
-    throw std::runtime_error(std::string(name) + " is not a number: " + arg);
+// args excludes the program name.
+[[nodiscard]] SearchRequest parse_request(std::span<const char* const> args) {
+  std::string checkpoint_path;
+  if (args.size() == 11 && std::string_view{args[9]} == "--checkpoint") {
+    checkpoint_path = args[10];
+    args = args.first(9);
   }
-  if (pos != arg.size())
-    throw std::runtime_error(std::string(name) + " is not a number: " + arg);
-  if (v < lo || v > hi)
-    throw std::runtime_error(std::string(name) + " must be in [" + std::to_string(lo) + ", " +
-                             std::to_string(hi) + "], got " + arg);
-  return (int)v;
+  if (args.size() != 9)
+    throw UsageError{""}; // wrong argument count: usage text only
+
+  try {
+    const SearchBounds bounds{.x_min = parse_int(args[0], "x_min", -COORD_LIMIT, COORD_LIMIT),
+                              .x_max = parse_int(args[1], "x_max", -COORD_LIMIT, COORD_LIMIT),
+                              .y_min = parse_int(args[2], "y_min", -Y_LIMIT, Y_LIMIT),
+                              .y_max = parse_int(args[3], "y_max", -Y_LIMIT, Y_LIMIT),
+                              .z_min = parse_int(args[4], "z_min", -COORD_LIMIT, COORD_LIMIT),
+                              .z_max = parse_int(args[5], "z_max", -COORD_LIMIT, COORD_LIMIT)};
+    if (bounds.x_min > bounds.x_max || bounds.y_min > bounds.y_max || bounds.z_min > bounds.z_max)
+      throw UsageError{"min bound exceeds max bound"};
+
+    const auto version{parse_int(args[6], "version", 0, NUM_VERSIONS - 1)};
+    auto directions{std::string_view{args[8]} == "all" ? std::vector{0, 1, 2, 3}
+                                                       : std::vector{parse_int(args[8], "direction", 0, 3)}};
+    return {.bounds = bounds,
+            .formation = parse_formation_file(args[7]),
+            .version = version,
+            .directions = std::move(directions),
+            .checkpoint_path = std::move(checkpoint_path)};
+  } catch (const UsageError&) {
+    throw;
+  } catch (const std::exception& error) {
+    throw UsageError{error.what()}; // a bad formation file also gets the usage text
+  }
 }
 
 } // namespace
 
 int main(int argc, char* argv[]) {
-  auto start_wall = std::chrono::high_resolution_clock::now();
-
-  std::string checkpoint_path;
-  if (argc == 12 && std::string(argv[10]) == "--checkpoint") {
-    checkpoint_path = argv[11];
-    argc = 10;
-  }
-  if (argc != 10) {
-    usage(argv[0]);
-    return 1;
-  }
-
-  SearchBounds bounds;
-  int version;
-  std::vector<int> directions;
-  std::vector<BlockInfo> formation;
+  const auto started{std::chrono::steady_clock::now()};
   try {
-    bounds.x_min = parse_int_arg(argv[1], "x_min", -COORD_LIMIT, COORD_LIMIT);
-    bounds.x_max = parse_int_arg(argv[2], "x_max", -COORD_LIMIT, COORD_LIMIT);
-    bounds.y_min = parse_int_arg(argv[3], "y_min", -Y_LIMIT, Y_LIMIT);
-    bounds.y_max = parse_int_arg(argv[4], "y_max", -Y_LIMIT, Y_LIMIT);
-    bounds.z_min = parse_int_arg(argv[5], "z_min", -COORD_LIMIT, COORD_LIMIT);
-    bounds.z_max = parse_int_arg(argv[6], "z_max", -COORD_LIMIT, COORD_LIMIT);
-    if (bounds.x_min > bounds.x_max || bounds.y_min > bounds.y_max || bounds.z_min > bounds.z_max)
-      throw std::runtime_error("min bound exceeds max bound");
+    const auto request{parse_request({argv + 1, argv + argc})};
+    const auto outcome{run_search_session(request)};
+    if (outcome.status == SessionStatus::stopped)
+      return 3;
 
-    version = parse_int_arg(argv[7], "version", 0, NUM_VERSIONS - 1);
-
-    if (std::string(argv[9]) == "all")
-      directions = {0, 1, 2, 3};
-    else
-      directions = {parse_int_arg(argv[9], "direction", 0, 3)};
-
-    formation = parse_formation_file(argv[8]);
-  } catch (const std::exception& e) {
-    std::cerr << "Error: " << e.what() << std::endl;
-    usage(argv[0]);
+    const std::chrono::duration<double> elapsed{std::chrono::steady_clock::now() - started};
+    std::cout << "Kernel time: " << outcome.kernel_seconds << " seconds\n"
+              << "Search completed in " << elapsed.count() << " seconds" << std::endl;
+    return 0;
+  } catch (const UsageError& error) {
+    if (*error.what() != '\0')
+      std::cerr << "Error: " << error.what() << std::endl;
+    std::cerr << "Usage: " << argv[0] << USAGE;
+    return 1;
+  } catch (const std::exception& error) {
+    std::cerr << "Error: " << error.what() << std::endl;
     return 1;
   }
-
-  const auto outcome = run_search_session({bounds, formation, version, directions, checkpoint_path});
-  if (outcome.exit_status != 0)
-    return outcome.exit_status;
-
-  auto end_wall = std::chrono::high_resolution_clock::now();
-  std::chrono::duration<double> elapsed = end_wall - start_wall;
-  std::cout << "Kernel time: " << outcome.kernel_seconds << " seconds" << std::endl;
-  std::cout << "Search completed in " << elapsed.count() << " seconds" << std::endl;
-  return 0;
 }

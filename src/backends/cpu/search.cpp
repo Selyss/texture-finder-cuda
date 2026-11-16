@@ -1,162 +1,136 @@
-// Portable multithreaded CPU backend: same contract as the CUDA kernel,
-// built from the same src/texture/texture_rules.hpp. Threads pull chunks of the
-// linearized volume from an atomic cursor (the CPU analog of the GPU's
-// chunk-cursor design) and walk them with the same incremental
-// decompose-once-then-carry scheme.
+// Portable multithreaded CPU backend, and the readable reference for the GPU
+// ones: it tests every position against every block with the shared texture
+// rules. Threads take chunks of the linearised volume from an atomic cursor.
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <cstdio>
-#include <cstdlib>
-#include <mutex>
+#include <limits>
+#include <span>
+#include <stdexcept>
 #include <thread>
-#include <utility>
+#include <tuple>
 #include <vector>
 
 #include "search/backend.hpp"
 #include "texture/texture_rules.hpp"
 
-const char* search_backend_name() {
+std::string_view search_backend_name() {
   return "CPU";
 }
 
 namespace {
 
-constexpr unsigned long long CHUNK = 1u << 16;
+constexpr std::uint64_t CHUNK_POSITIONS{1u << 16};
 
-struct Shared {
-  SearchBounds b;
-  const BlockInfo* blocks;
-  int n_blocks;
-  int version;
-  unsigned long long total;
-  long long nx, nz;
-  std::atomic<unsigned long long> cursor{0};
-  std::atomic<unsigned long long> found{0};
-  std::mutex sink;
-  std::vector<MatchResult> results;
+struct Position {
+  int x, y, z;
 };
 
-void worker(Shared& S) {
-  std::vector<MatchResult> local;
-  unsigned long long my_found = 0;
+struct Job {
+  SearchBounds bounds;
+  std::span<const BlockInfo> blocks;
+  int version;
+  std::uint64_t positions;
+  std::atomic<std::uint64_t> cursor{0};
+};
 
+struct WorkerResult {
+  std::vector<MatchResult> matches; // at most MAX_MATCHES
+  std::uint64_t found{0};
+};
+
+// Positions are numbered x fastest, then z, then y.
+[[nodiscard]] Position position_at(const SearchBounds& bounds, std::uint64_t index) {
+  const auto nx{bounds.nx()}, nz{bounds.nz()};
+  return {.x = bounds.x_min + static_cast<int>(index % nx),
+          .y = bounds.y_min + static_cast<int>(index / nx / nz),
+          .z = bounds.z_min + static_cast<int>(index / nx % nz)};
+}
+
+void advance(Position& at, const SearchBounds& bounds) {
+  if (++at.x <= bounds.x_max)
+    return;
+  at.x = bounds.x_min;
+  if (++at.z <= bounds.z_max)
+    return;
+  at.z = bounds.z_min;
+  ++at.y;
+}
+
+[[nodiscard]] bool formation_matches(std::span<const BlockInfo> blocks, int version, Position origin) {
+  return std::ranges::all_of(blocks, [&](const BlockInfo& block) {
+    const int mod{block.is_side ? MOD_SIDE : MOD_TOP_BOTTOM};
+    return get_texture_for_version(version, origin.x + block.x, origin.y + block.y, origin.z + block.z,
+                                   mod) == block.rotation;
+  });
+}
+
+void search_chunks(Job& job, WorkerResult& result) {
   for (;;) {
-    const unsigned long long base = S.cursor.fetch_add(CHUNK);
-    if (base >= S.total)
-      break;
-    const unsigned long long end = std::min(base + CHUNK, S.total);
+    const auto first{job.cursor.fetch_add(CHUNK_POSITIONS)};
+    if (first >= job.positions)
+      return;
+    const auto end{std::min(first + CHUNK_POSITIONS, job.positions)};
 
-    unsigned long long r = base;
-    int x = S.b.x_min + (int)(r % (unsigned long long)S.nx);
-    r /= (unsigned long long)S.nx;
-    int z = S.b.z_min + (int)(r % (unsigned long long)S.nz);
-    r /= (unsigned long long)S.nz;
-    int y = S.b.y_min + (int)r;
-
-    for (unsigned long long g = base; g < end; g++) {
-      bool ok = true;
-      for (int i = 0; i < S.n_blocks; i++) {
-        const BlockInfo& bi = S.blocks[i];
-        const int mod = bi.is_side ? MOD_SIDE : MOD_TOP_BOTTOM;
-        const int v = get_texture_for_version(S.version, x + bi.x, y + bi.y, z + bi.z, mod);
-        if (v != bi.rotation) {
-          ok = false;
-          break;
-        }
-      }
-      if (ok) {
-        my_found++;
-        if (local.size() < MAX_MATCHES)
-          local.push_back({x, y, z});
-      }
-
-      if (++x > S.b.x_max) {
-        x = S.b.x_min;
-        if (++z > S.b.z_max) {
-          z = S.b.z_min;
-          y++;
-        }
-      }
+    auto at{position_at(job.bounds, first)};
+    for (auto index{first}; index < end; ++index, advance(at, job.bounds)) {
+      if (!formation_matches(job.blocks, job.version, at))
+        continue;
+      ++result.found;
+      if (result.matches.size() < MAX_MATCHES)
+        result.matches.push_back({at.x, at.y, at.z});
     }
-  }
-
-  S.found.fetch_add(my_found);
-  std::lock_guard<std::mutex> lock(S.sink);
-  for (const auto& m : local) {
-    if (S.results.size() >= MAX_MATCHES)
-      break;
-    S.results.push_back(m);
   }
 }
 
 } // namespace
 
-DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockInfo>& tops_and_bottoms,
-                           const std::vector<BlockInfo>& sides, int version) {
-  if (tops_and_bottoms.size() > MAX_FORMATION_BLOCKS || sides.size() > MAX_FORMATION_BLOCKS) {
-    std::fprintf(stderr, "Formation exceeds %d blocks per face type\n", MAX_FORMATION_BLOCKS);
-    std::exit(1);
+DirectionResult run_search(const SearchBounds& bounds, const SearchFormation& formation, int version) {
+  // Tops first: a top check rejects 75% of candidates, a side check 50%.
+  auto blocks{formation.tops};
+  blocks.insert(blocks.end(), formation.sides.begin(), formation.sides.end());
+  if (blocks.empty())
+    throw std::invalid_argument{"empty formation"};
+
+  constexpr auto limit{std::numeric_limits<std::uint64_t>::max()};
+  const auto nx{bounds.nx()}, ny{bounds.ny()}, nz{bounds.nz()};
+  if (ny > limit / nz || nx > limit / (ny * nz))
+    throw std::invalid_argument{"search volume too large"};
+
+  Job job{.bounds = bounds, .blocks = blocks, .version = version, .positions = nx * ny * nz};
+  std::vector<WorkerResult> workers(std::max(1u, std::thread::hardware_concurrency()));
+
+  const auto started{std::chrono::steady_clock::now()};
+  {
+    std::vector<std::jthread> threads;
+    for (auto& worker : workers)
+      threads.emplace_back([&job, &worker] { search_chunks(job, worker); });
+  } // joins
+  const std::chrono::duration<double> elapsed{std::chrono::steady_clock::now() - started};
+
+  DirectionResult result{.kernel_seconds = elapsed.count()};
+  for (const auto& worker : workers) {
+    result.total += worker.found;
+    const auto room{MAX_MATCHES - result.matches.size()};
+    const auto take{std::min(room, worker.matches.size())};
+    result.matches.insert(result.matches.end(), worker.matches.begin(), worker.matches.begin() + take);
   }
-
-  // Tops first: a mod-4 check rejects 75% of candidates, a side check 50%.
-  std::vector<BlockInfo> blocks = tops_and_bottoms;
-  blocks.insert(blocks.end(), sides.begin(), sides.end());
-  if (blocks.empty()) {
-    std::fprintf(stderr, "Empty formation\n");
-    std::exit(1);
-  }
-
-  Shared S;
-  S.b = bounds;
-  S.blocks = blocks.data();
-  S.n_blocks = (int)blocks.size();
-  S.version = version;
-  S.nx = (long long)bounds.x_max - bounds.x_min + 1;
-  S.nz = (long long)bounds.z_max - bounds.z_min + 1;
-  const unsigned long long ny = (unsigned long long)((long long)bounds.y_max - bounds.y_min + 1);
-  const unsigned long long nz_u = (unsigned long long)S.nz;
-  const unsigned long long nx_u = (unsigned long long)S.nx;
-  if (ny > (~0ull) / nz_u || nx_u > (~0ull) / (ny * nz_u)) {
-    std::fprintf(stderr, "Search volume too large\n");
-    std::exit(1);
-  }
-  S.total = nx_u * ny * nz_u;
-
-  const auto t0 = std::chrono::steady_clock::now();
-
-  unsigned n = std::thread::hardware_concurrency();
-  if (n == 0)
-    n = 4;
-  std::vector<std::thread> pool;
-  for (unsigned i = 0; i < n; i++)
-    pool.emplace_back(worker, std::ref(S));
-  for (auto& t : pool)
-    t.join();
-
-  const auto t1 = std::chrono::steady_clock::now();
-  const auto ms = std::chrono::duration<float, std::milli>(t1 - t0).count();
-
-  const unsigned long long count = S.found.load();
-
-  std::sort(S.results.begin(), S.results.end(), [](const MatchResult& a, const MatchResult& b) {
-    return a.x != b.x ? a.x < b.x : (a.y != b.y ? a.y < b.y : a.z < b.z);
-  });
-  return {std::move(S.results), count, count > MAX_MATCHES, ms};
+  result.truncated = result.total > MAX_MATCHES;
+  std::ranges::sort(result.matches, {}, [](const MatchResult& m) { return std::tuple{m.x, m.y, m.z}; });
+  return result;
 }
 
 bool shared_search_enabled(int) {
   return false;
 }
 
-SharedSearchResult run_shared_search(const SearchBounds& bounds,
-                                     const std::vector<SearchFormation>& formations, int version) {
+SharedSearchResult run_shared_search(const SearchBounds& bounds, std::span<const SearchFormation> formations,
+                                     int version) {
   SharedSearchResult result;
-  result.directions.resize(formations.size());
-  for (size_t i = 0; i < formations.size(); ++i) {
-    result.directions[i] = run_search(bounds, formations[i].tops, formations[i].sides, version);
-    result.kernel_seconds += result.directions[i].kernel_ms / 1000.0;
+  for (const auto& formation : formations) {
+    result.directions.push_back(run_search(bounds, formation, version));
+    result.kernel_seconds += result.directions.back().kernel_seconds;
   }
   return result;
 }

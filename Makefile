@@ -2,7 +2,7 @@
 #   nvcc present        -> cuda   (NVIDIA GPU)
 #   else on macOS       -> metal  (Apple GPU)
 #   else                -> cpu    (portable multithreaded C++)
-# All backends implement the same runSearch() (src/search/backend.hpp) and
+# All backends implement the same run_search() (src/search/backend.hpp) and
 # compile the same src/texture/texture_rules.hpp, so behavior is identical; run
 # test/e2e.sh to validate whichever backend was built.
 #
@@ -30,12 +30,12 @@ endif
 WARNINGS = -Wall -Wextra -Wshadow
 
 ARCH ?= native
-NVCCFLAGS = -O3 -arch=$(ARCH) -std=c++17 -Isrc -Xcompiler=-Wall,-Wextra,-Wshadow
+NVCCFLAGS = -O3 -arch=$(ARCH) -std=c++20 -Isrc -Xcompiler=-Wall,-Wextra,-Wshadow
 
 CXX ?= c++
-CXXFLAGS = -O3 -std=c++17 -Isrc $(WARNINGS)
+CXXFLAGS = -O3 -std=c++20 -Isrc $(WARNINGS)
 
-COMMON_SRC = src/main.cpp src/search/session.cpp src/search/checkpoint.cpp src/texture/formation_io.cpp
+COMMON_SRC = src/main.cpp src/search/session.cpp src/search/checkpoint.cpp src/search/progress.cpp src/texture/formation_io.cpp
 COMMON_HEADERS = $(wildcard src/search/*.hpp src/texture/*.hpp)
 CUDA_HEADERS = $(wildcard src/backends/cuda/*.cuh)
 

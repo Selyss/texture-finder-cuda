@@ -16,7 +16,7 @@
 
 #include "search/backend.hpp"
 
-const char* search_backend_name() {
+std::string_view search_backend_name() {
   return "Metal";
 }
 
@@ -92,8 +92,9 @@ id<MTLComputePipelineState> ensure_pipeline(int version) {
 
 } // namespace
 
-DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockInfo>& tops_and_bottoms,
-                           const std::vector<BlockInfo>& sides, int version) {
+DirectionResult run_search(const SearchBounds& bounds, const SearchFormation& formation, int version) {
+  const auto& tops_and_bottoms{formation.tops};
+  const auto& sides{formation.sides};
   if (tops_and_bottoms.size() > MAX_FORMATION_BLOCKS || sides.size() > MAX_FORMATION_BLOCKS) {
     std::fprintf(stderr, "Formation exceeds %d blocks per face type\n", MAX_FORMATION_BLOCKS);
     std::exit(1);
@@ -186,20 +187,20 @@ DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockIn
   std::sort(matches.begin(), matches.end(), [](const MatchResult& a, const MatchResult& b) {
     return a.x != b.x ? a.x < b.x : (a.y != b.y ? a.y < b.y : a.z < b.z);
   });
-  return {std::move(matches), total, total > MAX_MATCHES, ms};
+  return {std::move(matches), total, total > MAX_MATCHES, ms / 1000.0};
 }
 
 bool shared_search_enabled(int) {
   return false;
 }
 
-SharedSearchResult run_shared_search(const SearchBounds& bounds,
-                                     const std::vector<SearchFormation>& formations, int version) {
+SharedSearchResult run_shared_search(const SearchBounds& bounds, std::span<const SearchFormation> formations,
+                                     int version) {
   SharedSearchResult result;
   result.directions.resize(formations.size());
   for (size_t i = 0; i < formations.size(); ++i) {
-    result.directions[i] = run_search(bounds, formations[i].tops, formations[i].sides, version);
-    result.kernel_seconds += result.directions[i].kernel_ms / 1000.0;
+    result.directions[i] = run_search(bounds, formations[i], version);
+    result.kernel_seconds += result.directions[i].kernel_seconds;
   }
   return result;
 }

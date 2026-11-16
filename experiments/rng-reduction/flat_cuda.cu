@@ -494,8 +494,8 @@ void compare_results(const SearchResult& actual, const SearchResult& expected, c
 
 SearchResult baseline_search(const SearchBounds& bounds, const std::vector<BlockInfo>& tops,
                              const std::vector<BlockInfo>& sides, float& kernel_ms) {
-  auto result = run_search(bounds, tops, sides, MODERN_VERSION);
-  kernel_ms = result.kernel_ms;
+  auto result = run_search(bounds, {tops, sides}, MODERN_VERSION);
+  kernel_ms = static_cast<float>(result.kernel_seconds * 1000.0);
   return {std::move(result.matches), result.total};
 }
 

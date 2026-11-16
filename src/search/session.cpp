@@ -1,335 +1,316 @@
+#include "search/session.hpp"
+
 #include <algorithm>
-#include <chrono>
+#include <array>
 #include <cmath>
-#include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
+#include <span>
 #include <stdexcept>
+#include <string_view>
+#include <tuple>
 
-#ifdef _WIN32
-#include <io.h>
-#define TF_ISATTY_STDERR() _isatty(_fileno(stderr))
-#else
-#include <unistd.h>
-#define TF_ISATTY_STDERR() isatty(fileno(stderr))
-#endif
-
-#include "session.hpp"
-#include "checkpoint.hpp"
+#include "search/checkpoint.hpp"
+#include "search/progress.hpp"
 #include "texture/rotation.hpp"
 
 namespace {
 
-// Volumes above this are searched in z-band slices so the driver can report
-// progress, stream matches, and checkpoint between slices.
-constexpr unsigned long long SLICE_THRESHOLD = 1'000'000'000ull;
-constexpr unsigned long long FIRST_SLICE_POSITIONS = 200'000'000ull;
-constexpr double TARGET_SLICE_SECONDS = 2.0;
+// Larger volumes are searched in z slices, so the session can report
+// progress, print matches as they arrive, and checkpoint between slices.
+constexpr std::uint64_t SLICE_THRESHOLD{1'000'000'000};
+constexpr std::uint64_t FIRST_SLICE_POSITIONS{200'000'000};
+constexpr double TARGET_SLICE_SECONDS{2.0};
 
-const char* DIRECTION_NAMES[4] = {"North", "West", "South", "East"};
+constexpr std::array<std::string_view, 4> DIRECTION_NAMES{"North", "West", "South", "East"};
+constexpr std::array<std::string_view, NUM_VERSIONS> VERSION_NAMES{"1.21.2+", "1.13 - 1.21.1", "<=1.12.2",
+                                                                   "Sodium 1.0-4.1 (MC 1.16 - 1.18.2)",
+                                                                   "Sodium 4.2-4.8 (MC 1.19 - 1.19.3)"};
 
-struct Progress {
-  unsigned long long done = 0;
-  unsigned long long total = 0;
-  bool enabled = false;
-  bool tty = false;
-  std::chrono::steady_clock::time_point start;
-  std::chrono::steady_clock::time_point last_print;
-  bool line_pending = false;
+void print_header(const SearchRequest& request) {
+  std::cout << "Backend: " << search_backend_name() << "\n"
+            << "Version: " << VERSION_NAMES[request.version] << "\n";
+  if (request.directions.size() == 1)
+    std::cout << "Facing: " << DIRECTION_NAMES[request.directions.front()] << "\n";
+  else
+    std::cout << "Facing: trying all directions\n";
+  std::cout.flush();
+}
 
-  void begin(unsigned long long total_positions, unsigned long long already_done) {
-    total = total_positions;
-    done = already_done;
-    enabled = true;
-    tty = TF_ISATTY_STDERR() != 0;
-    start = last_print = std::chrono::steady_clock::now();
+[[nodiscard]] SearchFormation split_by_face(std::span<const BlockInfo> blocks) {
+  SearchFormation formation;
+  for (const auto& block : blocks)
+    (block.is_side ? formation.sides : formation.tops).push_back(block);
+  if (formation.tops.size() > MAX_FORMATION_BLOCKS || formation.sides.size() > MAX_FORMATION_BLOCKS)
+    throw std::runtime_error("formation has too many blocks (max " + std::to_string(MAX_FORMATION_BLOCKS) +
+                             " per face type)");
+  return formation;
+}
+
+[[nodiscard]] SearchFormation rotated(SearchFormation formation, int quarter_turns) {
+  for (int turn{0}; turn < quarter_turns; ++turn) {
+    for (auto& block : formation.tops)
+      rotate_formation(block);
+    for (auto& block : formation.sides)
+      rotate_formation(block);
   }
+  return formation;
+}
 
-  void update(unsigned long long positions) {
-    if (!enabled)
-      return;
-    done += positions;
-    const auto now = std::chrono::steady_clock::now();
-    const double since_last = std::chrono::duration<double>(now - last_print).count();
-    if (since_last < (tty ? 0.2 : 5.0) && done < total)
-      return;
-    last_print = now;
+// Positions in one z layer. Throws if the whole volume overflows 64 bits.
+[[nodiscard]] std::uint64_t checked_layer_size(const SearchBounds& bounds) {
+  constexpr auto limit{std::numeric_limits<std::uint64_t>::max()};
+  const auto nx{bounds.nx()}, ny{bounds.ny()}, nz{bounds.nz()};
+  if (nx > limit / ny || nx * ny > limit / nz)
+    throw std::runtime_error("search volume too large");
+  return nx * ny;
+}
 
-    const double elapsed = std::chrono::duration<double>(now - start).count();
-    const double rate = elapsed > 0 ? (double)done / elapsed : 0;
-    const double pct = total > 0 ? 100.0 * (double)done / (double)total : 100.0;
-    char eta[64] = "--:--:--";
-    if (rate > 0 && done < total) {
-      long long s = (long long)((double)(total - done) / rate);
-      std::snprintf(eta, sizeof(eta), "%02lld:%02lld:%02lld", s / 3600, s / 60 % 60, s % 60);
-    }
-    char line[160];
-    std::snprintf(line, sizeof(line), "Progress: %5.1f%% | %.3g/%.3g positions | %.3g/s | ETA %s", pct,
-                  (double)done, (double)total, rate, eta);
-    if (tty) {
-      std::fprintf(stderr, "\r%-100s", line);
-      line_pending = true;
-    } else
-      std::fprintf(stderr, "%s\n", line);
-    std::fflush(stderr);
-  }
+// Each top block divides coincidental matches by 4 and each side block by 2.
+// Says how much constraint is missing when the formation cannot be unique.
+void warn_if_weak(const SearchFormation& formation, const SearchBounds& bounds) {
+  const auto volume{static_cast<double>(bounds.nx()) * static_cast<double>(bounds.ny()) *
+                    static_cast<double>(bounds.nz())};
+  const auto have_bits{2.0 * static_cast<double>(formation.tops.size()) +
+                       static_cast<double>(formation.sides.size())};
+  const auto need_bits{std::log2(volume) + 6.64}; // at most ~0.01 expected coincidences
+  if (need_bits <= have_bits)
+    return;
+  const auto more_tops{static_cast<int>(std::ceil((need_bits - have_bits) / 2.0))};
+  std::cout << "Warning: formation is weak for this volume; ~" << volume * std::pow(2.0, -have_bits)
+            << " coincidental matches expected. Add ~" << more_tops << " more top-face blocks (or "
+            << 2 * more_tops << " side blocks) for a unique result." << std::endl;
+}
 
-  // Keeps streamed stdout matches from colliding with the \r status line.
-  void clear_line() {
-    if (enabled && tty && line_pending) {
-      std::fprintf(stderr, "\r%-100s\r", "");
-      std::fflush(stderr);
-      line_pending = false;
-    }
-  }
-
-  void end() {
-    if (enabled && tty && line_pending)
-      std::fprintf(stderr, "\n");
-  }
-};
-
-void print_match(const MatchResult& m, int direction, bool all_mode) {
-  std::cout << "Match found at [" << m.x << ", " << m.y << ", " << m.z << "]";
-  if (all_mode)
+void print_match(const MatchResult& match, int direction, bool name_direction) {
+  std::cout << "Match found at [" << match.x << ", " << match.y << ", " << match.z << "]";
+  if (name_direction)
     std::cout << " facing " << DIRECTION_NAMES[direction];
   std::cout << "\n";
 }
 
+[[nodiscard]] Checkpoint open_checkpoint(const SearchRequest& request, bool slice_first) {
+  const auto& bounds{request.bounds};
+  Checkpoint checkpoint;
+  checkpoint.slice_first = slice_first;
+  checkpoint.next_z = bounds.z_min;
+  if (request.checkpoint_path.empty())
+    return checkpoint;
+
+  checkpoint.path = request.checkpoint_path;
+  checkpoint.signature = checkpoint_signature(request);
+  if (!checkpoint.load())
+    return checkpoint;
+
+  // The file decides the slice order from here on, so check it fits this request.
+  const auto z_in_range{checkpoint.next_z >= bounds.z_min &&
+                        checkpoint.next_z <= std::int64_t{bounds.z_max} + 1};
+  if (checkpoint.slice_first &&
+      (request.directions.size() == 1 || checkpoint.direction_index != 0 || !z_in_range))
+    throw std::runtime_error("invalid slice-first checkpoint: " + checkpoint.path);
+  std::cout << "Resuming from checkpoint: direction index " << checkpoint.direction_index
+            << ", z = " << checkpoint.next_z << std::endl;
+  return checkpoint;
+}
+
+// TF_MAX_SLICES=N stops after N slices and leaves the checkpoint behind, so
+// tests can exercise resume. Negative: no limit.
+[[nodiscard]] std::int64_t slice_limit_from_environment() {
+  const auto* text{std::getenv("TF_MAX_SLICES")};
+  return text ? std::atoll(text) : -1;
+}
+
+[[nodiscard]] SearchBounds z_slice(SearchBounds bounds, std::int64_t first, std::int64_t last) {
+  bounds.z_min = static_cast<int>(first);
+  bounds.z_max = static_cast<int>(last);
+  return bounds;
+}
+
+class Session {
+public:
+  Session(const SearchRequest& request, const SearchFormation& formation, std::uint64_t layer_size)
+      : bounds_{request.bounds}
+      , version_{request.version}
+      , directions_{request.directions}
+      , formation_{formation}
+      , layer_size_{layer_size}
+      , name_directions_{directions_.size() > 1}
+      , checkpoint_{open_checkpoint(request, name_directions_ && shared_search_enabled(version_))}
+      , slice_limit_{slice_limit_from_environment()} {
+    const auto volume{layer_size_ * bounds_.nz()};
+    sliced_ = checkpoint_.active() || volume > SLICE_THRESHOLD;
+    if (!sliced_)
+      return;
+    const auto layers_done{static_cast<std::uint64_t>(checkpoint_.next_z - bounds_.z_min)};
+    const auto directions_per_layer{checkpoint_.slice_first ? directions_.size() : 1};
+    progress_.start(volume * directions_.size(),
+                    checkpoint_.direction_index * volume + layers_done * layer_size_ * directions_per_layer);
+  }
+
+  [[nodiscard]] SearchOutcome run() {
+    const auto finished{checkpoint_.slice_first ? search_slice_first() : search_direction_first()};
+    if (!finished)
+      return {SessionStatus::stopped};
+    progress_.finish();
+    print_summary();
+    checkpoint_.remove();
+    return {SessionStatus::finished, totals().kernel_seconds};
+  }
+
+private:
+  struct Found {
+    MatchResult match;
+    int direction;
+  };
+
+  [[nodiscard]] Totals& totals() noexcept { return checkpoint_.totals; }
+
+  // Every direction is searched within each z slice. False if stopped early.
+  [[nodiscard]] bool search_slice_first() {
+    std::vector<SearchFormation> formations;
+    for (const int direction : directions_)
+      formations.push_back(rotated(formation_, direction));
+    const auto positions_per_layer{layer_size_ * directions_.size()};
+
+    for (auto z{checkpoint_.next_z}; z <= bounds_.z_max;) {
+      const auto last{sliced_ ? slice_end(z, positions_per_layer) : std::int64_t{bounds_.z_max}};
+      const auto batch{run_shared_search(z_slice(bounds_, z, last), formations, version_)};
+      for (std::size_t i{0}; i < batch.directions.size(); ++i)
+        accept(batch.directions[i], directions_[i]);
+
+      const auto positions{static_cast<std::uint64_t>(last - z + 1) * positions_per_layer};
+      z = last + 1;
+      if (!sliced_)
+        totals().kernel_seconds += batch.kernel_seconds;
+      else if (!finish_slice(positions, batch.kernel_seconds, 0, z, z <= bounds_.z_max))
+        return false;
+    }
+    return true;
+  }
+
+  // Each direction is searched to the end before the next. False if stopped early.
+  [[nodiscard]] bool search_direction_first() {
+    for (auto index{checkpoint_.direction_index}; index < directions_.size(); ++index) {
+      const int direction{directions_[index]};
+      const auto formation{rotated(formation_, direction)};
+
+      if (!sliced_) {
+        const auto result{run_search(bounds_, formation, version_)};
+        totals().kernel_seconds += result.kernel_seconds;
+        accept(result, direction);
+        continue;
+      }
+
+      // next_z is mid-direction only straight after a resume; otherwise it is z_min.
+      for (auto z{checkpoint_.next_z}; z <= bounds_.z_max;) {
+        const auto last{slice_end(z, layer_size_)};
+        const auto result{run_search(z_slice(bounds_, z, last), formation, version_)};
+        accept(result, direction);
+
+        const auto positions{static_cast<std::uint64_t>(last - z + 1) * layer_size_};
+        z = last + 1;
+        const auto work_remains{z <= bounds_.z_max || index + 1 < directions_.size()};
+        if (!finish_slice(positions, result.kernel_seconds, index, z, work_remains))
+          return false;
+      }
+      checkpoint_.direction_index = index + 1;
+      checkpoint_.next_z = bounds_.z_min;
+      checkpoint_.save();
+    }
+    return true;
+  }
+
+  // Last z of the slice starting at `z`, sized from the measured rate so a
+  // slice takes about TARGET_SLICE_SECONDS.
+  [[nodiscard]] std::int64_t slice_end(std::int64_t z, std::uint64_t positions_per_layer) const {
+    const auto target{rate_ > 0 ? static_cast<std::uint64_t>(rate_ * TARGET_SLICE_SECONDS)
+                                : FIRST_SLICE_POSITIONS};
+    const auto layers{std::max<std::uint64_t>(1, target / positions_per_layer)};
+    const auto layers_left{static_cast<std::uint64_t>(bounds_.z_max - z)};
+    return layers <= layers_left ? z + static_cast<std::int64_t>(layers) - 1 : bounds_.z_max;
+  }
+
+  // A sliced search prints matches as they arrive. An unsliced one is short,
+  // so it collects them and prints one sorted list at the end.
+  void accept(const DirectionResult& result, int direction) {
+    totals().truncated |= result.truncated;
+    totals().matches += result.total;
+    totals().listed += result.matches.size();
+    if (!sliced_) {
+      for (const auto& match : result.matches)
+        collected_.push_back({match, direction});
+    } else if (!result.matches.empty()) {
+      progress_.clear_line();
+      for (const auto& match : result.matches)
+        print_match(match, direction, name_directions_);
+      std::cout.flush();
+    }
+  }
+
+  // Records one finished slice. False if the slice limit says to stop here.
+  [[nodiscard]] bool finish_slice(std::uint64_t positions, double seconds, std::size_t direction_index,
+                                  std::int64_t next_z, bool work_remains) {
+    totals().kernel_seconds += seconds;
+    if (seconds > 0) {
+      const auto rate{static_cast<double>(positions) / seconds};
+      rate_ = rate_ > 0 ? 0.5 * rate_ + 0.5 * rate : rate;
+    }
+    progress_.advance(positions);
+    checkpoint_.direction_index = direction_index;
+    checkpoint_.next_z = next_z;
+    checkpoint_.save();
+
+    ++slices_done_;
+    if (slice_limit_ < 0 || slices_done_ < slice_limit_ || !work_remains)
+      return true;
+    progress_.finish();
+    std::cout << "Stopping after " << slices_done_ << " slice(s) (TF_MAX_SLICES)";
+    if (checkpoint_.active())
+      std::cout << "; state saved to " << checkpoint_.path;
+    std::cout << std::endl;
+    return false;
+  }
+
+  void print_summary() {
+    std::ranges::sort(collected_, {}, [](const Found& found) {
+      return std::tuple{found.match.x, found.match.y, found.match.z, found.direction};
+    });
+    for (const auto& found : collected_)
+      print_match(found.match, found.direction, name_directions_);
+
+    const auto& [matches, listed, kernel_seconds, truncated]{totals()};
+    if (matches == 0)
+      std::cout << "No matches found." << std::endl;
+    else
+      std::cout << matches << (matches == 1 ? " match" : " matches") << std::endl;
+    if (truncated)
+      std::cout << "Warning: only the first " << listed << " of " << matches
+                << " matches are listed; shrink the search area." << std::endl;
+  }
+
+  SearchBounds bounds_;
+  int version_;
+  std::span<const int> directions_;
+  const SearchFormation& formation_;
+  std::uint64_t layer_size_;
+  bool name_directions_;
+  Checkpoint checkpoint_;
+  std::int64_t slice_limit_;
+  std::int64_t slices_done_{0};
+  bool sliced_{false};
+  double rate_{0.0}; // positions per second, smoothed over slices
+  Progress progress_;
+  std::vector<Found> collected_;
+};
+
 } // namespace
 
 SearchOutcome run_search_session(const SearchRequest& request) {
-  const auto& bounds = request.bounds;
-  const auto& formation = request.formation;
-  const auto version = request.version;
-  const auto& directions = request.directions;
-  const auto& checkpoint_path = request.checkpoint_path;
-  std::cout << "Backend: " << search_backend_name() << std::endl;
-  const char* VERSION_NAMES[NUM_VERSIONS] = {"1.21.2+", "1.13 - 1.21.1", "<=1.12.2",
-                                             "Sodium 1.0-4.1 (MC 1.16 - 1.18.2)",
-                                             "Sodium 4.2-4.8 (MC 1.19 - 1.19.3)"};
-  std::cout << "Version: " << VERSION_NAMES[version] << std::endl;
-  const bool all_mode = directions.size() > 1;
-  if (!all_mode)
-    std::cout << "Facing: " << DIRECTION_NAMES[directions[0]] << std::endl;
-  else
-    std::cout << "Facing: trying all directions" << std::endl;
-
-  std::vector<BlockInfo> tops_and_bottoms, sides;
-  for (const auto& info : formation)
-    (info.is_side ? sides : tops_and_bottoms).push_back(info);
-
-  if (tops_and_bottoms.size() > MAX_FORMATION_BLOCKS || sides.size() > MAX_FORMATION_BLOCKS) {
-    std::cerr << "Error: formation has too many blocks (max " << MAX_FORMATION_BLOCKS << " per face type)"
-              << std::endl;
-    return {1};
-  }
-
-  const unsigned long long nx = (unsigned long long)((long long)bounds.x_max - bounds.x_min + 1);
-  const unsigned long long ny = (unsigned long long)((long long)bounds.y_max - bounds.y_min + 1);
-  const unsigned long long nz = (unsigned long long)((long long)bounds.z_max - bounds.z_min + 1);
-  if (nx > (~0ull) / ny || nx * ny > (~0ull) / nz) {
-    std::cerr << "Error: search volume too large" << std::endl;
-    return {1};
-  }
-  const unsigned long long rows_per_z = nx * ny;
-  const double volume = (double)nx * (double)ny * (double)nz;
-
-  // Uniqueness lint: each top block divides coincidental matches by 4,
-  // each side block by 2. Report exactly how much constraint is missing.
-  const double have_bits = 2.0 * (double)tops_and_bottoms.size() + (double)sides.size();
-  const double need_bits = std::log2(volume) + 6.64; // expected <= ~0.01 coincidences
-  const double expected_random = volume * std::pow(2.0, -have_bits);
-  if (need_bits > have_bits) {
-    const int more_tops = (int)std::ceil((need_bits - have_bits) / 2.0);
-    std::cout << "Warning: formation is weak for this volume; ~" << expected_random
-              << " coincidental matches expected. Add ~" << more_tops << " more top-face blocks (or "
-              << 2 * more_tops << " side blocks) for a unique result." << std::endl;
-  }
-
-  Checkpoint ckpt;
-  ckpt.slice_first = all_mode && shared_search_enabled(version);
-  ckpt.next_z = bounds.z_min; // progress baseline even when no checkpoint is used
-  if (!checkpoint_path.empty()) {
-    ckpt.signature = checkpoint_signature(request);
-    ckpt.path = checkpoint_path;
-    ckpt.active = true;
-    try {
-      if (ckpt.load()) {
-        if (ckpt.slice_first && (!all_mode || ckpt.dir_index != 0 || ckpt.next_z < bounds.z_min ||
-                                 ckpt.next_z > static_cast<long long>(bounds.z_max) + 1))
-          throw std::runtime_error("invalid slice-first checkpoint: " + ckpt.path);
-        std::cout << "Resuming from checkpoint: direction index " << ckpt.dir_index << ", z = " << ckpt.next_z
-                  << std::endl;
-      }
-    } catch (const std::exception& e) {
-      std::cerr << "Error: " << e.what() << std::endl;
-      return {1};
-    }
-  }
-
-  // Debug/test hook: stop (exit 3) after N slices, leaving the checkpoint
-  // behind, so resume can be exercised deterministically.
-  long long max_slices = -1;
-  if (const char* ms = std::getenv("TF_MAX_SLICES"))
-    max_slices = std::atoll(ms);
-  long long slices_done = 0;
-
-  const unsigned long long volume_per_dir = rows_per_z * nz;
-  const bool sliced = ckpt.active || volume_per_dir > SLICE_THRESHOLD;
-
-  Accum acc = ckpt.acc;
-  Progress progress;
-  if (sliced)
-    progress.begin(volume_per_dir * directions.size(),
-                   (unsigned long long)ckpt.dir_index * volume_per_dir +
-                       (unsigned long long)((long long)ckpt.next_z - bounds.z_min) * rows_per_z *
-                           (ckpt.slice_first ? directions.size() : 1));
-
-  // Adaptive slice sizing: aim for TARGET_SLICE_SECONDS per slice based on
-  // the measured rate of the previous slice.
-  double rate_ema = 0.0;
-
-  struct Found {
-    MatchResult m;
-    int direction;
-  };
-  std::vector<Found> collected;
-
-  const auto rotate = [&](int dir) {
-    SearchFormation rotated{tops_and_bottoms, sides};
-    for (int r = 0; r < dir; ++r) {
-      for (auto& b : rotated.tops)
-        rotate_formation(b);
-      for (auto& b : rotated.sides)
-        rotate_formation(b);
-    }
-    return rotated;
-  };
-  const auto accept = [&](const DirectionResult& result, int dir) {
-    acc.truncated |= result.truncated;
-    acc.total_matches += result.total;
-    acc.listed += result.matches.size();
-    if (!sliced) {
-      for (const auto& match : result.matches)
-        collected.push_back({match, dir});
-    } else if (!result.matches.empty()) {
-      progress.clear_line();
-      for (const auto& match : result.matches)
-        print_match(match, dir, all_mode);
-      std::cout.flush();
-    }
-  };
-  const auto slice_end = [&](long long z, unsigned long long positions_per_row) {
-    const auto target = rate_ema > 0 ? static_cast<unsigned long long>(rate_ema * TARGET_SLICE_SECONDS)
-                                     : FIRST_SLICE_POSITIONS;
-    const auto rows = std::max(1ull, target / positions_per_row);
-    return rows <= static_cast<unsigned long long>(bounds.z_max - z) ? z + static_cast<long long>(rows) - 1
-                                                                     : bounds.z_max;
-  };
-  const auto record_slice = [&](unsigned long long positions, double seconds, size_t dir, long long next_z,
-                                bool work_remains) {
-    acc.kernel_sec += seconds;
-    if (seconds > 0) {
-      const double rate = static_cast<double>(positions) / seconds;
-      rate_ema = rate_ema > 0 ? 0.5 * rate_ema + 0.5 * rate : rate;
-    }
-    progress.update(positions);
-    ckpt.dir_index = dir;
-    ckpt.next_z = next_z;
-    ckpt.acc = acc;
-    ckpt.save();
-
-    ++slices_done;
-    if (max_slices < 0 || slices_done < max_slices || !work_remains)
-      return false;
-    progress.end();
-    std::cout << "Stopping after " << slices_done << " slice(s) (TF_MAX_SLICES)";
-    if (ckpt.active)
-      std::cout << "; state saved to " << ckpt.path;
-    std::cout << std::endl;
-    return true;
-  };
-
-  if (ckpt.slice_first) {
-    std::vector<SearchFormation> formations;
-    for (int dir : directions)
-      formations.push_back(rotate(dir));
-    const auto positions_per_row = rows_per_z * directions.size();
-    for (long long z = ckpt.next_z; z <= bounds.z_max;) {
-      SearchBounds slice = bounds;
-      const auto end = sliced ? slice_end(z, positions_per_row) : bounds.z_max;
-      slice.z_min = static_cast<int>(z);
-      slice.z_max = static_cast<int>(end);
-      const auto batch = run_shared_search(slice, formations, version);
-      for (size_t di = 0; di < batch.directions.size(); ++di)
-        accept(batch.directions[di], directions[di]);
-      if (sliced) {
-        if (record_slice((end - z + 1) * positions_per_row, batch.kernel_seconds, 0, end + 1,
-                         end < bounds.z_max))
-          return {3};
-      } else
-        acc.kernel_sec += batch.kernel_seconds;
-      z = end + 1;
-    }
-  }
-
-  for (size_t di = ckpt.dir_index; !ckpt.slice_first && di < directions.size(); ++di) {
-    const int dir = directions[di];
-    const auto rotated = rotate(dir);
-    const auto& tops = rotated.tops;
-    const auto& sids = rotated.sides;
-
-    if (!sliced) {
-      const auto result = run_search(bounds, tops, sids, version);
-      acc.kernel_sec += result.kernel_ms / 1000.0;
-      accept(result, dir);
-      continue;
-    }
-
-    long long z = (di == ckpt.dir_index && ckpt.resumed) ? ckpt.next_z : bounds.z_min;
-    while (z <= bounds.z_max) {
-      const auto end = slice_end(z, rows_per_z);
-      SearchBounds sub = bounds;
-      sub.z_min = static_cast<int>(z);
-      sub.z_max = static_cast<int>(end);
-      const auto result = run_search(sub, tops, sids, version);
-      accept(result, dir);
-
-      const auto positions = static_cast<unsigned long long>(end - z + 1) * rows_per_z;
-      z = end + 1;
-      if (record_slice(positions, result.kernel_ms / 1000.0, di, z,
-                       z <= bounds.z_max || di + 1 < directions.size()))
-        return {3};
-    }
-    ckpt.dir_index = di + 1;
-    ckpt.next_z = bounds.z_min;
-    ckpt.acc = acc;
-    ckpt.save();
-  }
-
-  progress.end();
-
-  if (!sliced) {
-    std::sort(collected.begin(), collected.end(), [](const Found& a, const Found& b) {
-      return a.m.x != b.m.x   ? a.m.x < b.m.x
-             : a.m.y != b.m.y ? a.m.y < b.m.y
-             : a.m.z != b.m.z ? a.m.z < b.m.z
-                              : a.direction < b.direction;
-    });
-    for (const auto& f : collected)
-      print_match(f.m, f.direction, all_mode);
-  }
-
-  if (acc.total_matches == 0)
-    std::cout << "No matches found." << std::endl;
-  else
-    std::cout << acc.total_matches << (acc.total_matches == 1 ? " match" : " matches") << std::endl;
-  if (acc.truncated)
-    std::cout << "Warning: only the first " << acc.listed << " of " << acc.total_matches
-              << " matches are listed; shrink the search area." << std::endl;
-
-  ckpt.finish();
-
-  return {0, acc.kernel_sec};
+  print_header(request);
+  const auto formation{split_by_face(request.formation)};
+  const auto layer_size{checked_layer_size(request.bounds)};
+  warn_if_weak(formation, request.bounds);
+  Session session{request, formation, layer_size};
+  return session.run();
 }
