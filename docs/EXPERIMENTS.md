@@ -1639,3 +1639,144 @@ step model or measure the diagonal layout itself.
 | Temporary standalone harness | `bcb8298dcd422b8c1e818e6e7671c25743770a09bbf4a3fab92e54a0489e255d` |
 | `src/kernel.cu` | `8c17d2e644395825ae025a2fd8c0f3899195715b785591516fd0184a07907a88` |
 | `include/cuda_bitplanes.cuh` | `ff99d56b1b94d62f33efb17a64634c4a262e962a4d2429a3b823c270510246a7` |
+
+### Reorganised source tree on Narval A100 (job 9435675)
+
+First CUDA build and run of the reorganised tree (`src/backends/`,
+`src/search/`, `src/texture/`). The source was commit `7bcdc69` plus the
+then-untracked `test/validate_cuda.sh`, which ran the whole job. Narval job
+`9435675` ran for 5 min 0 s on `ng10906` with one A100-SXM4-40GB, driver
+580.178.04 and CUDA 12.9 (`cuda/12.9`, `gcc/12.3`) targeting `sm_80`.
+
+The job exited `1:0` because one of 21 gates failed. That gate checked that
+the binary reports the CUDA backend, and the failure was in the script: it
+compared the first output line, which is the formation parser's message,
+instead of the `Backend:` line. The script now selects the `Backend:` line.
+That fix has been checked on a CPU binary only, and the job was not rerun.
+The CLI was built by `nvcc` and printed the CUDA bitplane traces, so the
+backend itself was the CUDA one.
+
+The other 20 gates passed:
+
+- The CLI, unit tests (12 cases, 249,765 assertions), tools and the
+  standalone harness built and passed.
+- `test/e2e.sh` passed with bitplanes off and with `TF_CUDA_BITPLANES=1`.
+- On the reference workload, one direction used bitplanes with no
+  fallback, all mode reported one shared field for four directions, and
+  both returned the fixture's single match, as did the standard kernel.
+- A 1-byte plane budget fell back and returned the match.
+- A checkpoint written after one slice in all mode with bitplanes on
+  resumed with bitplanes off, returned the match and removed the file.
+- The harness default run passed its synthetic mask checks and the full
+  GPU/CPU survivor counts: 6,099,175 / 24,417,246 / 24,412,805 /
+  24,406,584 / 390,623,920.
+
+CLI kernel time on the reference workload, in seconds, after one warmup
+per mode, as five alternating pairs:
+
+| Workload | Pair | Standard | Bitplanes |
+|---|---:|---:|---:|
+| one direction | 1 | 0.681705 | 0.126648 |
+| one direction | 2 | 0.681832 | 0.126540 |
+| one direction | 3 | 0.681802 | 0.126433 |
+| one direction | 4 | 0.681695 | 0.126436 |
+| one direction | 5 | 0.681673 | 0.126439 |
+| all directions | 1 | 2.725250 | 0.339550 |
+| all directions | 2 | 2.725420 | 0.338875 |
+| all directions | 3 | 2.725390 | 0.338839 |
+| all directions | 4 | 2.725270 | 0.338717 |
+| all directions | 5 | 2.725240 | 0.338794 |
+
+Medians were 0.126439 s for one direction and 0.338839 s for all
+directions with bitplanes, against 0.681705 s and 2.725270 s for the
+standard kernel. These are the first A100 CLI timings with 32-bit fill
+packing and with the shared field. The earlier A100 CLI figures, before
+either change, were 0.13834 s and 0.55351 s (job 9294135). The standard
+kernel matches its earlier 0.6814 to 0.6817 s.
+
+The harness default run reported nine samples with fill at 67.72 to
+67.74 ms and match plus verification at 97.86 to 97.88 ms. The default
+run uses the harness's original index calculation and 64-bit packing, and
+has no earlier stride 5 record to compare against.
+
+| Source | SHA-256 |
+|---|---|
+| `src/backends/cuda/search.cu` | `a535155bef8e3d15ddea86fa4018db453db11377304fc32d5f8a3408dbbefbcc` |
+| `src/backends/cuda/bitplanes.cuh` | `a06dffab1a7087408c3a793d2b344fb1fdb6e75895289484947f3490461dc6b9` |
+| `src/search/session.cpp` | `f983c5852385704a3ddaf32255f35bd5f8cd1f51d2eefb824dff466936527146` |
+| `src/search/checkpoint.cpp` | `18aba30bd57dd91137809affcbfc1c3a3a9ef50ddc2945a8a6464d540c215b88` |
+| `src/search/backend.hpp` | `84fdd3f0f28e032a4c069bd874b11afa562cd89287f1ebc01aafe044e6bf45e6` |
+| `experiments/rng-reduction/flat_cuda.cu` | `b6b29d65b8cc57e85f5952f4467f9addb98d1bed546653e3fa7dc23e3cb74c24` |
+
+### Restyled source on Narval A100 (job 9436591)
+
+The same script ran against the restyled tree: commit `7bcdc69` plus an
+uncommitted change that reformats the sources to 2-space style and renames
+identifiers to snake_case, with no logic changes. Narval job `9436591`
+completed in 4 min 54 s with exit code `0:0` on `ng31005`, using one
+A100-SXM4-40GB, driver 580.178.04 and CUDA 12.9 targeting `sm_80`.
+
+All 21 gates passed, including the backend check that failed in job
+`9435675` through the script's own error. The harness reproduced the same
+five survivor counts.
+
+CLI kernel time on the reference workload, in seconds:
+
+| Workload | Pair | Standard | Bitplanes |
+|---|---:|---:|---:|
+| one direction | 1 | 0.681568 | 0.126483 |
+| one direction | 2 | 0.681578 | 0.126461 |
+| one direction | 3 | 0.681579 | 0.126469 |
+| one direction | 4 | 0.681517 | 0.126468 |
+| one direction | 5 | 0.681572 | 0.126467 |
+| all directions | 1 | 2.725620 | 0.338755 |
+| all directions | 2 | 2.725620 | 0.338762 |
+| all directions | 3 | 2.725720 | 0.338747 |
+| all directions | 4 | 2.725540 | 0.338773 |
+| all directions | 5 | 2.725870 | 0.338748 |
+
+Bitplane medians were 0.126468 s and 0.338755 s, against 0.126439 s and
+0.338839 s before the restyle.
+
+| Source | SHA-256 |
+|---|---|
+| `src/backends/cuda/search.cu` | `35173d4dcabb2544cea0abc287d772e4a042841b5d30dc7ebde23f094e0b1d6b` |
+| `src/backends/cuda/bitplanes.cuh` | `0a2af73983360f55691a1227ac93a9fe6fc3fefd2ae7656573360bc19eb44709` |
+| `experiments/rng-reduction/flat_cuda.cu` | `7a2a3a75d25329d683cd8869c56d3fc0f9026ad448e8f4249c0a8b9499ed2945` |
+
+### Host layer rewrite on Narval A100 (job 9446997)
+
+The CLI, session, checkpoint, progress line and CPU backend were rewritten in
+C++20, and the backend interface now takes one `SearchFormation` and reports
+`kernel_seconds`. The CUDA sources changed only where they meet that
+interface. `test/validate_cuda.sh` ran on the uncommitted tree: Slurm job
+`9446997` completed in 5 min 0 s with exit code `0:0` on `ng30711`, with
+`gcc/12.3`, CUDA 12.9 and `-std=c++20` targeting `sm_80`.
+
+All 21 gates passed. The slice-first checkpoint written with bitplanes on
+resumed with bitplanes off, which is the one session path that cannot run on
+the CPU or Metal backends.
+
+CLI kernel time on the reference workload, in seconds:
+
+| Workload | Pair | Standard | Bitplanes |
+|---|---:|---:|---:|
+| one direction | 1 | 0.681478 | 0.126446 |
+| one direction | 2 | 0.681467 | 0.126441 |
+| one direction | 3 | 0.681479 | 0.126448 |
+| one direction | 4 | 0.681456 | 0.126423 |
+| one direction | 5 | 0.681465 | 0.126425 |
+| all directions | 1 | 2.725430 | 0.338642 |
+| all directions | 2 | 2.725630 | 0.338637 |
+| all directions | 3 | 2.725540 | 0.338925 |
+| all directions | 4 | 2.725340 | 0.338644 |
+| all directions | 5 | 2.725430 | 0.338806 |
+
+Bitplane medians were 0.126441 s and 0.338644 s, against 0.126468 s and
+0.338755 s in job `9436591`.
+
+| Source | SHA-256 |
+|---|---|
+| `src/backends/cuda/search.cu` | `bba95149d223aa68f157e6d69ffff25fe33c8b61811773abd0be5b08de891aea` |
+| `src/backends/cuda/bitplanes.cuh` | `0a2af73983360f55691a1227ac93a9fe6fc3fefd2ae7656573360bc19eb44709` |
+| `experiments/rng-reduction/flat_cuda.cu` | `c9d14beee37789cb16b885888cf196ddb6955e195facb2058c9ada28ba2d45a7` |
