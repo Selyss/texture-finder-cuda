@@ -277,6 +277,15 @@ TEST_CASE("bitplanes - a budget too small for one slab gives no plan") {
   CHECK(plan_search(PLAN_BOUNDS, formations, std::size_t{1} << 30).has_value());
 }
 
+TEST_CASE("bitplanes - a slab has no more rows than the caller allows") {
+  const std::vector<std::vector<BlockInfo>> formations{plan_formation()};
+  const auto plan = plan_search(PLAN_BOUNDS, formations, std::size_t{1} << 30, 3);
+  REQUIRE(plan.has_value());
+  CHECK(plan->slab_rows == 3);
+  CHECK(plan->slab(0).layout.nz == 3);
+  CHECK_FALSE(plan_search(PLAN_BOUNDS, formations, std::size_t{1} << 30, 0).has_value());
+}
+
 TEST_CASE("bitplanes - every block is a plane check on its own coset and verified on the others") {
   const auto blocks = plan_formation();
   const std::vector<std::vector<BlockInfo>> formations{blocks};
@@ -368,8 +377,8 @@ TEST_CASE("bitplanes - field, filter and survivor check find exactly the brute-f
   const MatchResult origin{-5, 0, 3};
   for (int version = 0; version < NUM_VERSIONS; ++version) {
     const auto v = static_cast<Version>(version);
-    std::vector<BlockInfo> blocks{{0, 0, 0, 0, false},  {70, 1, 2, 0, false}, {-65, -1, -3, 0, true},
-                                  {3, 2, 5, 0, true},   {1, 0, 6, 0, false},  {-9, 1, 4, 0, true}};
+    std::vector<BlockInfo> blocks{{0, 0, 0, 0, false}, {70, 1, 2, 0, false}, {-65, -1, -3, 0, true},
+                                  {3, 2, 5, 0, true},  {1, 0, 6, 0, false},  {-9, 1, 4, 0, true}};
     for (auto& block : blocks)
       block.rotation = get_texture_for_version(v, origin.x + block.x, origin.y + block.y, origin.z + block.z,
                                                block.is_side ? MOD_SIDE : MOD_TOP_BOTTOM);
@@ -397,14 +406,8 @@ TEST_CASE("bitplanes - field, filter and survivor check find exactly the brute-f
       field.clear();
       for (const int y : plan->plane_y)
         for (int z_index = 0; z_index < layout.hashed_rows; ++z_index)
-          for (int word = 0; word < layout.field_words; ++word) {
-            const auto x_offset = std::int64_t{word} * WORD_BITS;
-            const auto z = layout.first_hashed_z + std::int64_t{z_index} * STRIDE;
-            field.push_back(hash_word(v, static_cast<std::uint32_t>(layout.field_x + x_offset) * 3129871u,
-                                      z * 116129781LL, y,
-                                      static_cast<int>(std::min<std::int64_t>(layout.field_width - x_offset,
-                                                                               WORD_BITS))));
-          }
+          for (int word = 0; word < layout.field_words; ++word)
+            field.push_back(field_word(v, layout, y, z_index, word));
       prepare_plane_checks(layout, direction.checks, direction.offsets.data(), checks);
 
       for (int y_row = 0; y_row < layout.ny; ++y_row)
@@ -412,9 +415,9 @@ TEST_CASE("bitplanes - field, filter and survivor check find exactly the brute-f
           for (int word = 0; word < layout.candidate_words; ++word) {
             const int y = layout.bounds.y_min + y_row, z = layout.bounds.z_min + z_row;
             const int coset = residue(z);
-            const Word mask = filter_word(layout, checks.data(), direction.offsets.data(), field.data(),
-                                          static_cast<std::size_t>(y_row), static_cast<std::size_t>(z_row),
-                                          word);
+            const Word mask =
+                filter_word(layout, checks.data(), direction.offsets.data(), field.data(),
+                            static_cast<std::size_t>(y_row), static_cast<std::size_t>(z_row), word);
             for (int bit = 0; bit < WORD_BITS; ++bit) {
               const int x = layout.bounds.x_min + word * WORD_BITS + bit;
               const bool survives = (mask >> bit) & 1;

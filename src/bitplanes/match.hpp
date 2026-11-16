@@ -1,7 +1,9 @@
 #pragma once
 
+#ifndef __METAL_VERSION__ // the Metal shader pastes these files in instead
 #include "bitplanes/layout.hpp"
 #include "texture/texture_rules.hpp"
+#endif
 
 // The three steps of a bitplane search, written once for every backend:
 // hashing a field word, filtering a word of candidates against the field, and
@@ -21,13 +23,12 @@ namespace bitplanes {
 // and `z_term` are the hash terms of the first position, and bits from `bits`
 // up are cleared. The bits are gathered 32 at a time so the shifts stay in
 // 32-bit registers on a GPU.
-TF_NODISCARD TF_HOST_DEVICE TF_FORCE_INLINE Planes hash_word(Version version, uint32_t x_term,
-                                                             int64_t z_term, int32_t y,
-                                                             int bits) TF_NOEXCEPT {
+TF_NODISCARD TF_HOST_DEVICE TF_FORCE_INLINE Planes hash_word(Version version, uint32_t x_term, int64_t z_term,
+                                                             int32_t y, int bits) TF_NOEXCEPT {
   Planes pair{};
   if (bits <= 0)
     return pair;
-  for (int half = 0; half < 2; ++half) {
+  for (int part = 0; part < 2; ++part) {
     uint32_t low = 0, high = 0;
     for (int bit = 0; bit < 32; ++bit, x_term += 3129871u) {
       const uint32_t rotation =
@@ -35,19 +36,32 @@ TF_NODISCARD TF_HOST_DEVICE TF_FORCE_INLINE Planes hash_word(Version version, ui
       low = (low >> 1) | (rotation << 31);
       high = (high >> 1) | ((rotation >> 1) << 31);
     }
-    pair.low |= static_cast<Word>(low) << (half * 32);
-    pair.high |= static_cast<Word>(high) << (half * 32);
+    pair.low |= static_cast<Word>(low) << (part * 32);
+    pair.high |= static_cast<Word>(high) << (part * 32);
   }
   pair.low &= low_mask(bits);
   pair.high &= low_mask(bits);
   return pair;
 }
 
+// Field word `word` of hashed row `z_index` on world level `y`.
+TF_NODISCARD TF_HOST_DEVICE TF_FORCE_INLINE Planes field_word(Version version, Layout layout, int32_t y,
+                                                              int z_index, int word) TF_NOEXCEPT {
+  const int64_t z = layout.first_hashed_z + static_cast<int64_t>(z_index) * STRIDE;
+  const int64_t x_offset = static_cast<int64_t>(word) * WORD_BITS;
+  const int64_t remaining = layout.field_width - x_offset;
+  const int bits = remaining < WORD_BITS ? static_cast<int>(remaining) : WORD_BITS;
+  return hash_word(version, static_cast<uint32_t>(layout.field_x + x_offset) * 3129871u, z * 116129781LL, y,
+                   bits);
+}
+
 // The candidates of one word that pass every plane check of their z coset.
 // `y` and `z_row` count from the slab's first level and first row.
-TF_NODISCARD TF_HOST_DEVICE TF_FORCE_INLINE Word filter_word(const Layout& layout, const PlaneCheck* checks,
-                                                             const int* coset_offsets, const Planes* planes,
-                                                             size_t y, size_t z_row, int word) TF_NOEXCEPT {
+TF_NODISCARD TF_HOST_DEVICE TF_FORCE_INLINE Word filter_word(Layout layout,
+                                                             TF_BUFFER const PlaneCheck* checks,
+                                                             TF_BUFFER const int* coset_offsets,
+                                                             TF_BUFFER const Planes* planes, size_t y,
+                                                             size_t z_row, int word) TF_NOEXCEPT {
   const int remaining = layout.nx - word * WORD_BITS;
   Word mask = low_mask(remaining < WORD_BITS ? remaining : WORD_BITS);
   // The coset anchor is within the slab's first STRIDE rows.
@@ -74,7 +88,8 @@ TF_NODISCARD TF_HOST_DEVICE TF_FORCE_INLINE Word filter_word(const Layout& layou
 // True when the candidate also has every block the field does not cover:
 // checks [first, last) of `verify`. `x_term` and `z_term` are the candidate
 // origin's hash terms.
-TF_NODISCARD TF_HOST_DEVICE TF_FORCE_INLINE bool survivor_matches(Version version, const VerifyCheck* verify,
+TF_NODISCARD TF_HOST_DEVICE TF_FORCE_INLINE bool survivor_matches(Version version,
+                                                                  TF_BUFFER const VerifyCheck* verify,
                                                                   int first, int last, uint32_t x_term,
                                                                   int64_t z_term, int32_t y) TF_NOEXCEPT {
   for (int i = first; i < last; ++i) {

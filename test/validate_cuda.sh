@@ -44,9 +44,9 @@ echo "job ${SLURM_JOB_ID:-none} on $(hostname)"
 if [ -f SOURCE_COMMIT ]; then cat SOURCE_COMMIT; else git rev-parse HEAD 2>/dev/null; git status --short 2>/dev/null | head -20; fi
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
 nvcc --version | tail -1
-sha src/backends/cuda/search.cu src/backends/cuda/bitplanes.cuh src/search/session.cpp \
-    src/search/checkpoint.cpp src/search/backend.hpp experiments/rng-reduction/flat_cuda.cu \
-    experiments/rng-reduction/diagnostic_kernels.cuh
+sha src/backends/cuda/search.cu src/backends/cuda/bitplanes.cuh src/bitplanes/*.hpp src/bitplanes/plan.cpp \
+    src/search/session.cpp src/search/checkpoint.cpp src/search/backend.hpp \
+    experiments/rng-reduction/flat_cuda.cu experiments/rng-reduction/diagnostic_kernels.cuh
 
 echo "== Build"
 make clean >/dev/null

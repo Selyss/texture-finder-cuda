@@ -19,13 +19,7 @@ static __global__ void fill_planes(Layout layout, const int* plane_y, size_t cou
   const int word = index % layout.field_words;
   const size_t row = index / layout.field_words;
   const int z_index = row % layout.hashed_rows;
-  const int y = plane_y[row / layout.hashed_rows];
-  const int64_t z = layout.first_hashed_z + static_cast<int64_t>(z_index) * STRIDE;
-  const int64_t x_offset = static_cast<int64_t>(word) * WORD_BITS;
-  const int64_t remaining = layout.field_width - x_offset;
-  const int bits = remaining < WORD_BITS ? static_cast<int>(remaining) : WORD_BITS;
-  planes[index] = hash_word(Version::modern, static_cast<uint32_t>(layout.field_x + x_offset) * 3129871u,
-                            z * 116129781LL, y, bits);
+  planes[index] = field_word(Version::modern, layout, plane_y[row / layout.hashed_rows], z_index, word);
 }
 
 // Each surviving bit belongs to exactly one thread, which hashes the blocks

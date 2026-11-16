@@ -51,7 +51,7 @@ bool eligible(std::span<const BlockInfo> blocks) {
 
 std::optional<SearchPlan> plan_search(const SearchBounds& bounds,
                                       std::span<const std::vector<BlockInfo>> formations,
-                                      std::size_t plane_bytes) {
+                                      std::size_t plane_bytes, std::int64_t max_slab_rows) {
   int min_x{formations.front().front().x}, max_x{min_x};
   int min_z{formations.front().front().z}, max_z{min_z};
   std::vector<int> y_offsets;
@@ -97,7 +97,7 @@ std::optional<SearchPlan> plan_search(const SearchBounds& bounds,
   const auto rows_that_fit{static_cast<std::int64_t>(words_budget / words_per_row) * STRIDE - halo};
   const auto match_blocks_per_row{static_cast<std::size_t>(ny) * segments};
   const auto grid_limit{INT_HIGHEST / static_cast<std::int64_t>(match_blocks_per_row)};
-  const auto slab_rows{std::min<std::int64_t>({nz, DEFAULT_SLAB_ROWS, rows_that_fit, grid_limit})};
+  const auto slab_rows{std::min<std::int64_t>({nz, max_slab_rows, rows_that_fit, grid_limit})};
   if (slab_rows <= 0)
     return std::nullopt;
 

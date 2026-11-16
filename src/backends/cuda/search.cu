@@ -8,7 +8,7 @@
 #include "backends/cuda/bitplane_search.hpp"
 #include "backends/cuda/device.hpp"
 #include "backends/cuda/match_buffer.hpp"
-#include "bitplanes/plan.hpp"
+#include "bitplanes/shared_search.hpp"
 #include "texture/texture_rules.hpp"
 
 std::string_view search_backend_name() {
@@ -282,37 +282,14 @@ bool shared_search_enabled(Version version) {
 
 SharedSearchResult run_shared_search(const SearchBounds& bounds,
                                      std::span<const std::vector<BlockInfo>> directions, Version version) {
-  // Directions that can use bitplanes share one field. The rest run alone.
-  std::vector<std::size_t> shared_indices;
-  std::vector<std::vector<BlockInfo>> shared_blocks;
-  if (shared_search_enabled(version)) {
-    for (std::size_t i{0}; i < directions.size(); ++i) {
-      if (!directions[i].empty() && bitplanes::eligible(directions[i])) {
-        shared_indices.push_back(i);
-        shared_blocks.push_back(directions[i]);
-      }
-    }
-  }
-
-  SharedSearchResult result;
-  result.directions.resize(directions.size());
-  std::vector<bool> done(directions.size(), false);
-  if (shared_blocks.size() > 1) {
-    if (auto output{cuda_bitplanes::search(bounds, shared_blocks)}) {
-      result.kernel_seconds += output->kernel_seconds;
-      if (cuda_bitplanes::trace_enabled())
-        std::fprintf(stderr, "CUDA search: bitplanes shared (%zu directions)\n", output->directions.size());
-      for (std::size_t i{0}; i < shared_indices.size(); ++i) {
-        result.directions[shared_indices[i]] = std::move(output->directions[i]);
-        done[shared_indices[i]] = true;
-      }
-    }
-  }
-  for (std::size_t i{0}; i < directions.size(); ++i) {
-    if (done[i])
-      continue;
-    result.directions[i] = run_search(bounds, directions[i], version);
-    result.kernel_seconds += result.directions[i].kernel_seconds;
-  }
-  return result;
+  return bitplanes::search_sharing_field(
+      bounds, directions, version,
+      [&](std::span<const std::vector<BlockInfo>> shared) -> std::optional<SharedSearchResult> {
+        auto output{cuda_bitplanes::search(bounds, shared)};
+        if (!output)
+          return std::nullopt;
+        if (cuda_bitplanes::trace_enabled())
+          std::fprintf(stderr, "CUDA search: bitplanes shared (%zu directions)\n", shared.size());
+        return SharedSearchResult{std::move(output->directions), output->kernel_seconds};
+      });
 }

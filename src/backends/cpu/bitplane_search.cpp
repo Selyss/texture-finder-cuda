@@ -51,7 +51,8 @@ struct Job {
   [[nodiscard]] SearchBounds tile(std::uint64_t index) const noexcept {
     const auto span{[](int min, int max, std::uint64_t tile_index, std::int64_t size) {
       const auto first{min + static_cast<std::int64_t>(tile_index) * size};
-      return std::pair{static_cast<int>(first), static_cast<int>(std::min<std::int64_t>(first + size - 1, max))};
+      return std::pair{static_cast<int>(first),
+                       static_cast<int>(std::min<std::int64_t>(first + size - 1, max))};
     }};
     const auto [x_min, x_max]{span(bounds.x_min, bounds.x_max, index % tiles_x, TILE_X)};
     const auto [z_min, z_max]{span(bounds.z_min, bounds.z_max, index / tiles_x % tiles_z, TILE_Z)};
@@ -101,15 +102,9 @@ private:
   void fill(const Layout& layout, std::span<const int> plane_y) {
     auto* word_out{field_.data()};
     for (const int y : plane_y) {
-      for (int z_index{0}; z_index < layout.hashed_rows; ++z_index) {
-        const auto z_term{(layout.first_hashed_z + std::int64_t{z_index} * STRIDE) * 116129781LL};
-        for (int word{0}; word < layout.field_words; ++word) {
-          const auto x_offset{std::int64_t{word} * WORD_BITS};
-          const auto bits{static_cast<int>(std::min<std::int64_t>(layout.field_width - x_offset, WORD_BITS))};
-          *word_out++ = hash_word(job_.version, static_cast<std::uint32_t>(layout.field_x + x_offset) * 3129871u,
-                                  z_term, y, bits);
-        }
-      }
+      for (int z_index{0}; z_index < layout.hashed_rows; ++z_index)
+        for (int word{0}; word < layout.field_words; ++word)
+          *word_out++ = field_word(job_.version, layout, y, z_index, word);
     }
   }
 
@@ -130,8 +125,8 @@ private:
           for (; survivors; survivors &= survivors - 1) {
             const int x{layout.bounds.x_min + word * WORD_BITS + std::countr_zero(survivors)};
             if (survivor_matches(job_.version, direction.verify.data(), direction.verify_offsets[coset],
-                                 direction.verify_offsets[coset + 1], static_cast<std::uint32_t>(x) * 3129871u,
-                                 z_term, y))
+                                 direction.verify_offsets[coset + 1],
+                                 static_cast<std::uint32_t>(x) * 3129871u, z_term, y))
               found.add({x, y, z});
           }
         }
@@ -189,8 +184,8 @@ std::optional<SearchOutput> search(const SearchBounds& bounds,
 
   SearchOutput output{.directions = {}, .seconds = elapsed.count()};
   for (std::size_t i{0}; i < formations.size(); ++i)
-    output.directions.push_back(
-        collect_matches(workers, [i](const Worker& worker) -> const WorkerMatches& { return worker.found(i); }));
+    output.directions.push_back(collect_matches(
+        workers, [i](const Worker& worker) -> const WorkerMatches& { return worker.found(i); }));
   return output;
 }
 

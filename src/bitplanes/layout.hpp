@@ -1,24 +1,42 @@
 #pragma once
 
-#include <algorithm>
-#include <cstddef>
-#include <cstdint>
-#include <limits>
-#include <vector>
-
-#include "search/backend.hpp"
-#include "texture/texture_rules.hpp"
-
 // How the bitplane field is laid out, shared by the planner, every backend
 // that searches with bitplanes, and the tests. The field stores the two rotation bits of
 // every position on one z row in STRIDE, one 64-bit word pair per 64 x values.
+//
+// Like texture_rules.hpp this compiles as C++, CUDA and Metal Shading
+// Language. The Metal shader is built by pasting the files together (see the
+// Makefile), so it has nothing to include, and it names the address space of
+// every constant and buffer pointer.
+#ifdef __METAL_VERSION__
+#define TF_CONSTANT constant
+#define TF_BUFFER device
+// The fields of search/backend.hpp's SearchBounds.
+struct SearchBounds {
+  int x_min, x_max;
+  int y_min, y_max;
+  int z_min, z_max;
+};
+#else
+#include <cstddef>
+#include <cstdint>
+
+#include "search/backend.hpp"
+#include "texture/texture_rules.hpp"
+#define TF_CONSTANT constexpr
+#define TF_BUFFER
+#endif
 
 namespace bitplanes {
-constexpr int STRIDE = 5;
-constexpr int WORD_BITS = 64;
-constexpr int THREADS = 256;
-constexpr int DEFAULT_SLAB_ROWS = 4096;
+TF_CONSTANT int STRIDE = 5;
+TF_CONSTANT int WORD_BITS = 64;
+TF_CONSTANT int THREADS = 256;
+TF_CONSTANT int DEFAULT_SLAB_ROWS = 4096;
+#ifdef __METAL_VERSION__
+using Word = uint64_t; // MSL has no long long
+#else
 using Word = unsigned long long;
+#endif
 
 struct Planes {
   Word low, high;
@@ -49,26 +67,14 @@ struct Layout {
   int64_t first_hashed_z;
 };
 
+// The Metal host code hands these structs to the shader as they are.
+static_assert(sizeof(Planes) == 16 && sizeof(PlaneCheck) == 24 && sizeof(VerifyCheck) == 24 &&
+                  sizeof(Layout) == 72,
+              "bitplane structs must have one layout in C++ and in the shader");
+
 TF_HOST_DEVICE inline int residue(int64_t z) {
   const int r = static_cast<int>(z % STRIDE);
   return r < 0 ? r + STRIDE : r;
-}
-
-inline void prepare_plane_checks(const Layout& slab, const std::vector<Check>& checks,
-                                 const int* coset_offsets, std::vector<PlaneCheck>& result) {
-  for (int coset = 0; coset < STRIDE; ++coset) {
-    const int64_t start = slab.bounds.z_min;
-    const int64_t anchor = start + residue(coset - start);
-    if (anchor > slab.bounds.z_max)
-      continue;
-    for (int i = coset_offsets[coset]; i < coset_offsets[coset + 1]; ++i) {
-      const auto& check = checks[i];
-      const size_t z_index = (anchor + check.z_offset - slab.first_hashed_z) / STRIDE;
-      const size_t level = check.y_slot;
-      result[i] = {(level * slab.hashed_rows + z_index) * slab.field_words + check.x_offset / WORD_BITS,
-                   check.x_offset % WORD_BITS, check.rotation, check.is_side};
-    }
-  }
 }
 
 TF_HOST_DEVICE inline int ceil_div(int value, int divisor) {
@@ -77,20 +83,6 @@ TF_HOST_DEVICE inline int ceil_div(int value, int divisor) {
 
 TF_HOST_DEVICE inline Word low_mask(int bits) {
   return bits == WORD_BITS ? ~0ull : (1ull << bits) - 1;
-}
-
-// Offsets are sorted. Each candidate interval maps to a consecutive run of indices.
-inline std::vector<int> compact_levels(const SearchBounds& bounds, const std::vector<int>& y_offsets) {
-  std::vector<int> plane_y;
-  int64_t next_y = std::numeric_limits<int>::min();
-  for (int dy : y_offsets) {
-    const int64_t first = static_cast<int64_t>(bounds.y_min) + dy;
-    const int64_t last = static_cast<int64_t>(bounds.y_max) + dy;
-    for (int64_t level = std::max(next_y, first); level <= last; ++level)
-      plane_y.push_back(static_cast<int>(level));
-    next_y = last + 1;
-  }
-  return plane_y;
 }
 
 } // namespace bitplanes
