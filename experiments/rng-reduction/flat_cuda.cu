@@ -21,15 +21,16 @@
 #include <utility>
 #include <vector>
 
-#include "backends/cuda/bitplane_plan.hpp"
 #include "backends/cuda/bitplane_search.hpp"
 #include "backends/cuda/device.hpp"
+#include "bitplanes/plan.hpp"
 #include "diagnostic_kernels.cuh"
 #include "texture/formation_io.hpp"
 #include "texture/rotation.hpp"
 #include "texture/texture_rules.hpp"
 
 namespace {
+using namespace bitplanes;
 using namespace cuda_bitplanes;
 using namespace cuda_bitplanes::diagnostic;
 using cuda::DeviceArray;

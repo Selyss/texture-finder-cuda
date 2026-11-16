@@ -7,11 +7,11 @@
 #include <span>
 #include <vector>
 
-#include "backends/cuda/bitplane_layout.hpp"
+#include "bitplanes/layout.hpp"
 
 // Decides how a search is cut into slabs and which blocks each kernel checks.
-// Host-only and free of CUDA calls, so the unit tests cover it.
-namespace cuda_bitplanes {
+// Plain host code shared by the backends, so the unit tests cover it.
+namespace bitplanes {
 
 // One direction's blocks grouped by z coset. A candidate on coset c reads the
 // plane checks in [offsets[c], offsets[c + 1]) from the field. Its other
@@ -22,7 +22,7 @@ struct DirectionPlan {
   std::array<int, STRIDE + 1> offsets{}, verify_offsets{};
 };
 
-// One launch of the fill and match kernels.
+// One pass of the fill and the match over a range of z rows.
 struct Slab {
   Layout layout;
   std::size_t field_words; // words the fill kernel writes
@@ -53,4 +53,4 @@ struct SearchPlan {
                                                     std::span<const std::vector<BlockInfo>> formations,
                                                     std::size_t plane_bytes);
 
-} // namespace cuda_bitplanes
+} // namespace bitplanes

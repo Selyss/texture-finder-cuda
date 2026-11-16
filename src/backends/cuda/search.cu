@@ -5,10 +5,10 @@
 #include <string>
 #include <vector>
 
-#include "backends/cuda/bitplane_plan.hpp"
 #include "backends/cuda/bitplane_search.hpp"
 #include "backends/cuda/device.hpp"
 #include "backends/cuda/match_buffer.hpp"
+#include "bitplanes/plan.hpp"
 #include "texture/texture_rules.hpp"
 
 std::string_view search_backend_name() {
@@ -263,7 +263,7 @@ DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockIn
   // Modern searches use bitplanes when the formation filters well enough and
   // the field fits in memory.
   if (shared_search_enabled(version)) {
-    if (cuda_bitplanes::eligible(blocks)) {
+    if (bitplanes::eligible(blocks)) {
       if (auto output{cuda_bitplanes::search(bounds, std::span{&blocks, 1})}) {
         trace("bitplanes");
         auto& result{output->directions.front()};
@@ -287,7 +287,7 @@ SharedSearchResult run_shared_search(const SearchBounds& bounds,
   std::vector<std::vector<BlockInfo>> shared_blocks;
   if (shared_search_enabled(version)) {
     for (std::size_t i{0}; i < directions.size(); ++i) {
-      if (!directions[i].empty() && cuda_bitplanes::eligible(directions[i])) {
+      if (!directions[i].empty() && bitplanes::eligible(directions[i])) {
         shared_indices.push_back(i);
         shared_blocks.push_back(directions[i]);
       }

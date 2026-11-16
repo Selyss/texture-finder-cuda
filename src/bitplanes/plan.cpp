@@ -1,9 +1,9 @@
-#include "backends/cuda/bitplane_plan.hpp"
+#include "bitplanes/plan.hpp"
 
 #include <algorithm>
 #include <limits>
 
-namespace cuda_bitplanes {
+namespace bitplanes {
 
 namespace {
 
@@ -148,4 +148,4 @@ Slab SearchPlan::slab(std::int64_t z_offset) const {
           .match_blocks = match_blocks_per_row * rows};
 }
 
-} // namespace cuda_bitplanes
+} // namespace bitplanes

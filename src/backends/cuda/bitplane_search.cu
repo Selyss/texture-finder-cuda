@@ -5,12 +5,14 @@
 #include <cstdlib>
 #include <string_view>
 
-#include "backends/cuda/bitplane_plan.hpp"
 #include "backends/cuda/bitplanes.cuh"
 #include "backends/cuda/device.hpp"
 #include "backends/cuda/match_buffer.hpp"
+#include "bitplanes/plan.hpp"
 
 namespace cuda_bitplanes {
+
+using namespace bitplanes;
 
 namespace {
 

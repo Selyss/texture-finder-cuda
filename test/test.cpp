@@ -1,14 +1,17 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <fstream>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 // The real headers the kernel compiles — not copies.
-#include "backends/cuda/bitplane_plan.hpp"
+#include "bitplanes/match.hpp"
+#include "bitplanes/plan.hpp"
 #include "texture/formation.hpp"
 #include "texture/formation_io.hpp"
 #include "texture/rotation.hpp"
@@ -231,10 +234,10 @@ TEST_CASE("parser - consistent duplicates and top+side pairs are accepted") {
   std::remove(path.c_str());
 }
 
-// The bitplane planner is host code, so the layout the CUDA kernels index is
-// checked here without a GPU.
+// The bitplane planner and the fill, filter and survivor check are shared
+// host code, so what every backend runs is checked here without a GPU.
 namespace {
-using namespace cuda_bitplanes;
+using namespace bitplanes;
 
 const SearchBounds PLAN_BOUNDS{-70, 100, -3, 2, -37, 41};
 
@@ -344,4 +347,95 @@ TEST_CASE("bitplanes - plane checks read the block's own position in every slab"
     z_offset += layout.nz;
   }
   CHECK(rows_covered == static_cast<std::int64_t>(PLAN_BOUNDS.nz()));
+}
+
+TEST_CASE("bitplanes - a side face shows the low bit of the top-face rotation in every version") {
+  std::mt19937 rng(7);
+  std::uniform_int_distribution<int> coordinate(-30000000, 30000000);
+  for (int version = 0; version < NUM_VERSIONS; ++version)
+    for (int i = 0; i < 20000; ++i) {
+      const int x = coordinate(rng), y = coordinate(rng) % 400, z = coordinate(rng);
+      const auto v = static_cast<Version>(version);
+      REQUIRE(get_texture_for_version(v, x, y, z, MOD_SIDE) ==
+              (get_texture_for_version(v, x, y, z, MOD_TOP_BOTTOM) & 1));
+    }
+}
+
+TEST_CASE("bitplanes - field, filter and survivor check find exactly the brute-force matches") {
+  // Three words of x with a partial last word, slabs of 5 rows so every coset
+  // meets a slab edge, and few enough blocks that most masks keep survivors.
+  const SearchBounds bounds{-70, 100, -3, 2, -17, 21};
+  const MatchResult origin{-5, 0, 3};
+  for (int version = 0; version < NUM_VERSIONS; ++version) {
+    const auto v = static_cast<Version>(version);
+    std::vector<BlockInfo> blocks{{0, 0, 0, 0, false},  {70, 1, 2, 0, false}, {-65, -1, -3, 0, true},
+                                  {3, 2, 5, 0, true},   {1, 0, 6, 0, false},  {-9, 1, 4, 0, true}};
+    for (auto& block : blocks)
+      block.rotation = get_texture_for_version(v, origin.x + block.x, origin.y + block.y, origin.z + block.z,
+                                               block.is_side ? MOD_SIDE : MOD_TOP_BOTTOM);
+    const auto matches_at = [&](int x, int y, int z, bool lattice_only) {
+      return std::all_of(blocks.begin(), blocks.end(), [&](const BlockInfo& block) {
+        if (lattice_only && residue(std::int64_t{z} + block.z) != 0)
+          return true;
+        return get_texture_for_version(v, x + block.x, y + block.y, z + block.z,
+                                       block.is_side ? MOD_SIDE : MOD_TOP_BOTTOM) == block.rotation;
+      });
+    };
+
+    const std::vector<std::vector<BlockInfo>> formations{blocks};
+    auto plan = plan_search(bounds, formations, std::size_t{1} << 30);
+    REQUIRE(plan.has_value());
+    plan->slab_rows = 5;
+    const auto& direction = plan->directions.front();
+    std::vector<Planes> field;
+    std::vector<PlaneCheck> checks(direction.checks.size());
+    std::uint64_t found = 0;
+    bool found_origin = false;
+
+    for (std::int64_t z_offset = 0; z_offset < static_cast<std::int64_t>(bounds.nz());) {
+      const auto layout = plan->slab(z_offset).layout;
+      field.clear();
+      for (const int y : plan->plane_y)
+        for (int z_index = 0; z_index < layout.hashed_rows; ++z_index)
+          for (int word = 0; word < layout.field_words; ++word) {
+            const auto x_offset = std::int64_t{word} * WORD_BITS;
+            const auto z = layout.first_hashed_z + std::int64_t{z_index} * STRIDE;
+            field.push_back(hash_word(v, static_cast<std::uint32_t>(layout.field_x + x_offset) * 3129871u,
+                                      z * 116129781LL, y,
+                                      static_cast<int>(std::min<std::int64_t>(layout.field_width - x_offset,
+                                                                               WORD_BITS))));
+          }
+      prepare_plane_checks(layout, direction.checks, direction.offsets.data(), checks);
+
+      for (int y_row = 0; y_row < layout.ny; ++y_row)
+        for (int z_row = 0; z_row < layout.nz; ++z_row)
+          for (int word = 0; word < layout.candidate_words; ++word) {
+            const int y = layout.bounds.y_min + y_row, z = layout.bounds.z_min + z_row;
+            const int coset = residue(z);
+            const Word mask = filter_word(layout, checks.data(), direction.offsets.data(), field.data(),
+                                          static_cast<std::size_t>(y_row), static_cast<std::size_t>(z_row),
+                                          word);
+            for (int bit = 0; bit < WORD_BITS; ++bit) {
+              const int x = layout.bounds.x_min + word * WORD_BITS + bit;
+              const bool survives = (mask >> bit) & 1;
+              if (x > bounds.x_max) {
+                REQUIRE(!survives);
+                continue;
+              }
+              REQUIRE(survives == matches_at(x, y, z, true));
+              const bool matches =
+                  survives && survivor_matches(v, direction.verify.data(), direction.verify_offsets[coset],
+                                               direction.verify_offsets[coset + 1],
+                                               static_cast<std::uint32_t>(x) * 3129871u,
+                                               std::int64_t{z} * 116129781LL, y);
+              REQUIRE(matches == matches_at(x, y, z, false));
+              found += matches;
+              found_origin |= matches && x == origin.x && y == origin.y && z == origin.z;
+            }
+          }
+      z_offset += layout.nz;
+    }
+    CHECK(found_origin);
+    CHECK(found >= 1);
+  }
 }

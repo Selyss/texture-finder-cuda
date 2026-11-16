@@ -36,8 +36,10 @@ CXX ?= c++
 CXXFLAGS = -O3 -std=c++20 -Isrc $(WARNINGS)
 
 COMMON_SRC = src/main.cpp src/search/session.cpp src/search/checkpoint.cpp src/search/progress.cpp src/texture/formation_io.cpp
-COMMON_HEADERS = $(wildcard src/search/*.hpp src/texture/*.hpp)
-CUDA_SRC = src/backends/cuda/search.cu src/backends/cuda/bitplane_search.cu src/backends/cuda/bitplane_plan.cpp
+COMMON_HEADERS = $(wildcard src/search/*.hpp src/texture/*.hpp src/bitplanes/*.hpp)
+# The bitplane planner is plain C++ that every backend with a bitplane search links.
+BITPLANE_SRC = src/bitplanes/plan.cpp
+CUDA_SRC = src/backends/cuda/search.cu src/backends/cuda/bitplane_search.cu $(BITPLANE_SRC)
 CUDA_HEADERS = $(wildcard src/backends/cuda/*.cuh src/backends/cuda/*.hpp)
 
 CCBIN = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.42.34433\bin\Hostx64\x64\cl.exe"
@@ -79,7 +81,7 @@ windows: $(COMMON_SRC) $(CUDA_SRC) $(COMMON_HEADERS) $(CUDA_HEADERS)
 
 # Host-only: compiles the exact headers the kernel uses, plus the parser,
 # against the doctest suite.
-TEST_SRC = test/test.cpp src/texture/formation_io.cpp src/backends/cuda/bitplane_plan.cpp
+TEST_SRC = test/test.cpp src/texture/formation_io.cpp $(BITPLANE_SRC)
 build/test: $(TEST_SRC) test/doctest.h $(COMMON_HEADERS) $(CUDA_HEADERS)
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -Itest $(TEST_SRC) -o $@

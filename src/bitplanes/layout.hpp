@@ -9,11 +9,11 @@
 #include "search/backend.hpp"
 #include "texture/texture_rules.hpp"
 
-// How the bitplane field is laid out, shared by the planner (host), the
-// kernels (device) and the tests. The field stores the two rotation bits of
+// How the bitplane field is laid out, shared by the planner, every backend
+// that searches with bitplanes, and the tests. The field stores the two rotation bits of
 // every position on one z row in STRIDE, one 64-bit word pair per 64 x values.
 
-namespace cuda_bitplanes {
+namespace bitplanes {
 constexpr int STRIDE = 5;
 constexpr int WORD_BITS = 64;
 constexpr int THREADS = 256;
@@ -93,4 +93,4 @@ inline std::vector<int> compact_levels(const SearchBounds& bounds, const std::ve
   return plane_y;
 }
 
-} // namespace cuda_bitplanes
+} // namespace bitplanes
