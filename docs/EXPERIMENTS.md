@@ -1904,3 +1904,192 @@ In each direction one z coset holds 390.6 million of them.
 | `src/backends/cuda/search.cu` | `095179f2cf3ac7253918bd83ba59ce54e212ef3562b442f7161ea3294a677755` |
 | `src/backends/cuda/bitplanes.cuh` | `cf46089821ab39c5300fcc43e8a2ec46c4b4f0631b5bec5b5afd9ae69af5951d` |
 | `experiments/rng-reduction/flat_cuda.cu` | `96a0b3c691e4a91d6ab050e354dc35e4e2e14467194cb0c57419ca831e65a9d5` |
+
+### Long-lived match threads (job 9463518)
+
+Tested whether the match is limited by thread launch overhead. The
+production match gives each thread one 64-candidate word.
+`match_word_columns` in the diagnostic header gives each thread one word
+column through `rows_per_thread` consecutive (y, z) rows, calling the same
+`filter_word` and `verify_survivors`. `TF_FLAT_WORD_COLUMNS=1` in the harness
+checks it against the standard kernel on synthetic slabs with chunks that
+straddle slab rows and y levels, then times it on W.
+
+Narval job `9463518` ran on `ng31401` with one A100-SXM4-40GB, `gcc/12.3`,
+CUDA 12.9 and `sm_80`, on the uncommitted tree later committed as `817dd44`
+plus this experiment. All 23 gates passed, and every timed run returned the
+standard kernel's exact match. Each variant ran once before nine samples in
+rotated order with 32-bit fill packing, precomputed offsets and 13 slabs of
+up to 4,096 rows. Times are CUDA event milliseconds for matching one
+direction of W.
+
+| Rows per thread | Median (ms) | Min (ms) | Max (ms) |
+|---:|---:|---:|---:|
+| production | 72.532 | 72.529 | 72.547 |
+| 1 | 79.974 | 79.971 | 79.989 |
+| 5 | 116.819 | 116.805 | 116.960 |
+| 25 | 125.918 | 125.893 | 125.969 |
+| 125 | 133.787 | 133.709 | 133.923 |
+| 625 | 153.561 | 152.038 | 154.336 |
+| 4096 | 292.245 | 292.178 | 292.333 |
+
+The fill median was 55.83 ms in every variant. Longer-lived threads were
+slower at every length, so launch overhead is not what limits the match and
+this design is ruled out. The one-row column kernel does the same work as
+production and was 7.4 ms slower; the experiment does not isolate why. The
+cost grew with the number of z rows a block covers at once, which spreads
+the field rows that concurrently running blocks read. That is consistent
+with the match being sensitive to how local its field reads are. It was not
+measured directly.
+
+| Source | SHA-256 |
+|---|---|
+| `src/backends/cuda/bitplanes.cuh` | `cf46089821ab39c5300fcc43e8a2ec46c4b4f0631b5bec5b5afd9ae69af5951d` |
+| `experiments/rng-reduction/diagnostic_kernels.cuh` | `a77594fd2f66b4d121b6596e2e0b4282de9620d3c4700bbd30383df40ff80125` |
+| `experiments/rng-reduction/flat_cuda.cu` | `b483fa8adf82bd48f0b4960882786c79ca9e964a025559d6efd383135de77883` |
+
+### Match launch order, pooled survivor check and field budget (job 9463975)
+
+Three follow-ups to the long-lived thread result, all on one A100-SXM4-40GB
+(`ng31304`, `gcc/12.3`, CUDA 12.9, `sm_80`), on `817dd44` plus the uncommitted
+experiment code. All 39 gates passed, and every timed run returned the
+standard kernel's exact match.
+
+`match_words_variant<ZMajor, Pooled>` in the diagnostic header is the
+production match with two independent changes. `ZMajor` numbers the launch by
+z row first and y second, so the candidate y values that read one field level
+run close together in time. `Pooled` has each block list its survivors in
+shared memory and work through the list with all of its threads; survivors
+beyond 1,024 per block are checked by the thread that found them.
+`TF_FLAT_MATCH_VARIANTS=1` checks all four combinations on synthetic slabs,
+including a dense case that overflows the pool, then times them on W. Each ran
+once before nine samples in rotated order. Times are CUDA event milliseconds
+for matching one direction, with a fill median of 55.83 ms throughout.
+
+| Variant | Median (ms) | Min (ms) | Max (ms) |
+|---|---:|---:|---:|
+| production (y-major, inline check) | 72.535 | 72.531 | 72.553 |
+| z-major | 68.614 | 68.611 | 68.623 |
+| pooled survivor check | 71.774 | 71.772 | 71.779 |
+| z-major and pooled | 71.376 | 71.375 | 71.384 |
+
+The z-major order was 3.92 ms faster than production, 5.4% of matching.
+Pooling gained 0.76 ms alone and lost 2.76 ms on top of z-major, so it is
+ruled out. Its small effect means the survivor check is not dominated by
+idle lanes in the way the estimate assumed.
+
+The field budget sweep ran the CLI with `TF_CUDA_BITPLANES_BYTES` from 1 GiB
+down to 4 MiB, which shortens the slabs until the whole field is smaller than
+the A100's 40 MB L2 cache. Each budget passed a gate that bitplanes ran and
+found the match, then ran five times. Kernel seconds, median of five:
+
+| Budget | Slab rows (approx.) | One direction | All directions |
+|---:|---:|---:|---:|
+| 1 GiB (default) | 4,096 | 0.125160 | 0.334267 |
+| 256 MiB | 1,985 | 0.125530 | 0.335446 |
+| 128 MiB | 990 | 0.126032 | 0.337053 |
+| 64 MiB | 495 | 0.127322 | 0.340708 |
+| 32 MiB | 245 | 0.129694 | 0.347810 |
+| 16 MiB | 120 | 0.134402 | 0.362721 |
+| 8 MiB | 60 | 0.145992 | 0.399663 |
+| 4 MiB | 30 | 0.172343 | 0.499130 |
+
+Slab rows are estimated from the budget and the 675,648 bytes one hashed z
+row of W takes, before the halo is subtracted. Smaller fields were slower at
+every step, so keeping the field in cache does not pay for the extra halo
+rows and launches. Together with the 5% from launch order, this indicates
+the match is not limited by field memory traffic. What does limit it was not
+measured; an instruction count is the next thing to check.
+
+| Source | SHA-256 |
+|---|---|
+| `src/backends/cuda/bitplanes.cuh` | `cf46089821ab39c5300fcc43e8a2ec46c4b4f0631b5bec5b5afd9ae69af5951d` |
+| `experiments/rng-reduction/flat_cuda.cu` | `44a4cadddffad10f278ec99b4c8233a2cceb70a34b36c663c2396245c15504e2` |
+| `experiments/rng-reduction/diagnostic_kernels.cuh` | `d3f33b6ea1d8bb85b91194b2d6195a901d334dad4bb0ac187b2017228defb6a5` |
+
+### Bitplane search on the CPU backend (M4, local)
+
+The planner and field layout moved from `src/backends/cuda/` to
+`src/bitplanes/`, and `src/bitplanes/match.hpp` now holds the three steps
+every backend shares: `hash_word` (the fill of one field word), `filter_word`
+and `survivor_matches`. They take the version as a parameter. The CUDA
+kernels call them with the modern version, and the unit suite runs them on
+the host against brute force for all five versions.
+
+The CPU backend gained `src/backends/cpu/bitplane_search.cpp`. Each thread
+takes tiles of 4,096 x by 32 y by 64 z candidates from an atomic cursor, plans
+the tile with the shared planner, fills a thread-local field and matches
+every requested direction against it. It runs for every version when the
+formation is eligible, and `TF_CPU_BITPLANES=0` forces the plain scan, which
+is unchanged and stays the reference.
+
+Measured on M4 (Apple M4 Pro, 14 threads) on W, kernel seconds:
+
+| Path | One direction | All directions |
+|---|---:|---:|
+| Plain scan | 62.3485 (one run, at `1d2b9e6`) | not run |
+| Bitplanes | 4.688 / 4.745 / 4.604 | 11.697 / 12.782 |
+
+Bitplanes were 13.3 times faster than the plain scan on one direction, using
+the median of the three runs. Metal on the same machine took 6.189 to
+6.209 s for one direction at `1d2b9e6`.
+
+Tile size sweep on W, one direction, three runs each in seconds:
+
+| x | y | z | Runs |
+|---:|---:|---:|---|
+| 4096 | 32 | 64 | 4.665 / 4.669 / 4.665 |
+| 1024 | 32 | 64 | 4.963 / 5.512 / 5.455 |
+| 2048 | 32 | 64 | 4.796 / 4.847 / 4.861 |
+| 8192 | 32 | 64 | 4.827 / 4.783 / 4.793 |
+| 16384 | 32 | 64 | 4.838 / 4.883 / 4.902 |
+| 4096 | 32 | 32 | 4.972 / 5.015 / 5.089 |
+| 4096 | 32 | 128 | 4.813 / 4.834 / 4.829 |
+| 4096 | 32 | 256 | 4.657 / 4.697 / 4.733 |
+| 4096 | 8 | 64 | 5.293 / 5.356 / 5.402 |
+| 4096 | 16 | 64 | 5.367 / 5.361 / 5.397 |
+
+W is 25 levels tall, so a y tile of 32 is one tile. The default stays at
+4096 by 32 by 64.
+
+Correctness checks, all on the CPU backend:
+
+- `make test`: 20 cases, 787,050 assertions.
+- `test/e2e.sh` in full, and with `FAST=1` under `TF_CPU_BITPLANES=0`.
+- A differential of 150 random formations (versions 0 to 4, 9 to 26 blocks,
+  0 to 70% side faces, volumes spanning several tiles) searched in their own
+  direction and with `all`, bitplanes against the plain scan: 300 runs, 107
+  of them on the bitplane path, 128 with more than one match, no difference.
+- 1,000 runs of the e2e synthetic round-trip with random origins. Two runs
+  reported a second match besides the planted one, for the seed-16 formation
+  (version 3, 15 side faces, 33 filter bits). The plain scan reported the
+  same two matches, and so did the committed `817dd44`. The e2e check for a
+  unique match can therefore fail on a real second match; one full e2e run in
+  eight did during this work.
+
+### Shared bitplane code on Narval A100 (job 9464541)
+
+`test/validate_cuda.sh` ran with `HARNESS_MODES=all` on the tree described
+in the previous entry, uncommitted on top of `817dd44`, on `ng10203` with one
+A100-SXM4-40GB, `gcc/12.3`, CUDA 12.9 and `sm_80`. All 31 gates passed: the
+21 build and CLI gates, the harness default run and its nine experiment modes.
+
+Median CLI kernel time over five alternating pairs, in seconds:
+
+| Workload | Standard (`TF_CUDA_BITPLANES=0`) | Bitplanes (default) |
+|---|---:|---:|
+| one direction | 0.681709 | 0.125219 |
+| all directions | 2.725940 | 0.334658 |
+
+Job `9463175` measured 0.125157 s and 0.334556 s for bitplanes before the
+kernels called the shared `hash_word`, `filter_word` and `survivor_matches`,
+so moving them into `src/bitplanes/match.hpp` did not measurably change the
+CUDA path. The match variants repeated their earlier medians within 0.01 ms:
+72.545 ms production, 68.622 ms z-major, 71.784 ms pooled, 71.389 ms both.
+
+| Source | SHA-256 |
+|---|---|
+| `src/backends/cuda/search.cu` | `9d772485176522fb06fd259c0c9d68dcf064c7d6bfc2fdd75d6efa81e21f7cb2` |
+| `src/backends/cuda/bitplanes.cuh` | `25db2273499b24e4d6980e0bf81a3cbb951cdd6a081bd2d901f3de7da588aed2` |
+| `experiments/rng-reduction/flat_cuda.cu` | `129a170f7022cd72dff36a81f653cdb54166c4129480a3ba65ce08a8ece0d508` |
+| `experiments/rng-reduction/diagnostic_kernels.cuh` | `d3f33b6ea1d8bb85b91194b2d6195a901d334dad4bb0ac187b2017228defb6a5` |
