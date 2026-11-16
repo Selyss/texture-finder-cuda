@@ -133,14 +133,17 @@ DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockIn
 
     for (std::uint64_t z_done{0}; z_done < nz; z_done += z_step) {
       const auto z_count{std::min(z_step, nz - z_done)};
-      const TfParams params{.x_min = bounds.x_min,
-                            .x_max = bounds.x_max,
-                            .y_min = bounds.y_min,
-                            .y_max = bounds.y_max,
-                            .z_max = bounds.z_max,
-                            .z_base = static_cast<int>(bounds.z_min + static_cast<std::int64_t>(z_done)),
-                            .total_blocks = static_cast<int>(shader_blocks.size()),
-                            .pad = 0};
+      const TfParams params{
+          .x_min = bounds.x_min,
+          .x_max = bounds.x_max,
+          .y_min = bounds.y_min,
+          .y_max = bounds.y_max,
+          // The grid is rounded up to whole threadgroups, so the kernel is
+          // told where this dispatch ends, not where the search ends.
+          .z_max = static_cast<int>(bounds.z_min + static_cast<std::int64_t>(z_done + z_count) - 1),
+          .z_base = static_cast<int>(bounds.z_min + static_cast<std::int64_t>(z_done)),
+          .total_blocks = static_cast<int>(shader_blocks.size()),
+          .pad = 0};
       contents_as<unsigned int>(slice_count_buffer) = 0;
 
       id<MTLCommandBuffer> commands = [s_queue commandBuffer];
