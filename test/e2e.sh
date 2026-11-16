@@ -55,7 +55,30 @@ out=$($BIN -109000 -108723 -64 -54 -70000 -69736 0 test/fixtures/formation_a.txt
 check "fixture at max corner" "Match found at [-108723, -54, -69736]" "$out"
 
 # 4. Synthetic round-trips: random origins, every version, every direction,
-#    with ~40% side faces. The searcher must recover the origin uniquely.
+#    with ~40% side faces. The searcher must recover the origin. A random
+#    formation now and then matches at a second place in the volume, so the
+#    full match list is compared with the independent CPU implementation
+#    instead of requiring exactly one match.
+CPU=build/cpu_search
+check_synthetic() { # <label> <expected-line> <args...>
+    local label=$1 expected=$2; shift 2
+    local g c
+    g=$("$BIN" "$@" 2>/dev/null | grep "^Match found" | sort) || true
+    c=$("$CPU" "$@" 2>/dev/null | grep "^Match found" | sort) || true
+    if ! grep -qxF "$expected" <<<"$g"; then
+        echo "FAIL: $label — missing: $expected"
+        fails=$((fails + 1))
+    elif [ "$g" != "$c" ]; then
+        echo "FAIL: $label — matches differ from the CPU reference"
+        diff <(echo "$g") <(echo "$c") | head -20 | sed 's/^/    /'
+        fails=$((fails + 1))
+    else
+        local count
+        count=$(wc -l <<<"$g" | tr -d ' ')
+        echo "PASS: $label$([ "$count" -gt 1 ] && echo " ($count matches, as the CPU reference)")"
+    fi
+}
+
 seed=1
 for version in 0 1 2 3 4; do
     for dir in 0 1 2 3; do
@@ -63,13 +86,13 @@ for version in 0 1 2 3 4; do
         oy=$(( (RANDOM % 300) - 60 ))
         oz=$(( (seed * 104729 + RANDOM) % 120001 - 60000 ))
         $GEN "$version" "$dir" "$ox" "$oy" "$oz" 24 40 "$seed" > "$TMP/form.txt"
+        volume=($((ox - 400)) $((ox + 400)) $((oy - 16)) $((oy + 16)) $((oz - 400)) $((oz + 400)))
 
-        out=$($BIN $((ox - 400)) $((ox + 400)) $((oy - 16)) $((oy + 16)) $((oz - 400)) $((oz + 400)) "$version" "$TMP/form.txt" "$dir")
-        check "synthetic v$version dir$dir" "Match found at [$ox, $oy, $oz]" "$out"
-
-        out=$($BIN $((ox - 400)) $((ox + 400)) $((oy - 16)) $((oy + 16)) $((oz - 400)) $((oz + 400)) "$version" "$TMP/form.txt" all)
-        check "synthetic v$version dir$dir (all mode)" \
-              "Match found at [$ox, $oy, $oz] facing ${DIRNAMES[$dir]}" "$out"
+        check_synthetic "synthetic v$version dir$dir" "Match found at [$ox, $oy, $oz]" \
+            "${volume[@]}" "$version" "$TMP/form.txt" "$dir"
+        check_synthetic "synthetic v$version dir$dir (all mode)" \
+            "Match found at [$ox, $oy, $oz] facing ${DIRNAMES[$dir]}" \
+            "${volume[@]}" "$version" "$TMP/form.txt" all
 
         seed=$((seed + 1))
     done
@@ -79,7 +102,6 @@ done
 #    the same match set as the independent CPU implementation — including
 #    dense many-match cases that exercise every position (any enumeration bug
 #    in the warp-compacted kernel shows up here deterministically).
-CPU=build/cpu_search
 diff_case() { # <label> <args...>
     local label=$1; shift
     local g c
