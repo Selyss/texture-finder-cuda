@@ -6,8 +6,9 @@
   and both legacy Sodium variants
 - Runs on NVIDIA GPUs (CUDA), Apple GPUs (Metal), or any CPU (portable
   multithreaded C++) — all from the same code and with identical results
-- Fast: 1.25 × 10¹¹ candidate positions in 0.72 s on an RTX 3090 — ~205×
-  the reference Java tool ([benchmarks](docs/BENCHMARKS.md))
+- Fast: 1.25 × 10¹¹ candidate positions in 0.13 s on an A100, 0.64 s on an
+  M4 Pro GPU and 3.5 s on its CPU, where the reference Java tool takes over
+  three minutes on a server ([benchmarks](docs/BENCHMARKS.md))
 - *Does not require the world seed*
 
 ## Features
@@ -64,6 +65,8 @@ Visual Studio install path differs).
   `src/search/checkpoint.cpp` owns the resume file format.
 - `src/search/backend.hpp` defines the interface implemented by CPU, CUDA,
   and Metal in `src/backends/`. The build links one backend.
+- `src/bitplanes/` holds the bitplane planner and the fill, filter and
+  survivor check that all three backends compile.
 - `test/` contains fixtures and validation tools. `experiments/` contains
   standalone performance prototypes, with results in `docs/EXPERIMENTS.md`.
 
@@ -149,14 +152,15 @@ Large searches show a live progress line with ETA on stderr and print
 matches as they are found. If the formation is too weak to give a unique
 result in the requested volume, the program says how many blocks to add.
 
-The CUDA and CPU backends use the bitplane search by default. It reuses
-packed texture rotations to filter candidates before checking the surviving
-positions. CUDA uses it for version 0 and the CPU backend for every version.
+Every backend uses the bitplane search by default. It reuses packed texture
+rotations to filter candidates before checking the surviving positions. CUDA
+uses it for version 0, and the Metal and CPU backends for every version.
 Searches with a weak filter, or on CUDA with too little available GPU memory,
-automatically use the plain search. `TF_CUDA_BITPLANES=0` or
-`TF_CPU_BITPLANES=0` in the environment forces the plain search every time.
-Set `TF_CUDA_BITPLANES_TRACE=1` or `TF_CPU_BITPLANES_TRACE=1` to see which
-path ran on stderr.
+automatically use the plain search. `TF_CUDA_BITPLANES=0`,
+`TF_METAL_BITPLANES=0` or `TF_CPU_BITPLANES=0` in the environment forces the
+plain search every time. Set `TF_CUDA_BITPLANES_TRACE=1`,
+`TF_METAL_BITPLANES_TRACE=1` or `TF_CPU_BITPLANES_TRACE=1` to see which path
+ran on stderr.
 In `all` mode, eligible directions share the bitplanes for each search
 slice. Long searches stream matches in slice order, with the facing on each
 line. Existing checkpoints resume in their original order. New slice-first

@@ -308,3 +308,27 @@ went from 275.4 to 179.3 ms of median GPU time (1.54×) and from
 531.7 to 394.0 ms of median whole-command time (1.35×). All nine
 paired runs matched the standard kernel exactly. See the
 [individual samples and validation](EXPERIMENTS.md#shared-bitplanes-in-the-cuda-cli-vulcan-job-2327586).
+
+## Bitplane search on every backend (2026-11-16)
+
+The same workload, kernel seconds, with the bitplane search that is now the
+default on all three backends. "Before" is the plain search of the same
+build, forced with `TF_CUDA_BITPLANES=0`, `TF_METAL_BITPLANES=0` or
+`TF_CPU_BITPLANES=0`. The CUDA rows are medians of five alternating pairs
+from Narval job `9464541`. The Metal and CPU rows are medians of the runs
+listed in the [experiment ledger](EXPERIMENTS.md).
+
+| Backend | Hardware | Directions | Before | Bitplanes | Ratio |
+|---|---|---|---:|---:|---:|
+| CUDA | A100-SXM4-40GB | one | 0.681709 s | 0.125219 s | 5.4× |
+| CUDA | A100-SXM4-40GB | all four | 2.725940 s | 0.334658 s | 8.1× |
+| Metal | Apple M4 Pro, 20-core GPU | one | 6.121 s | 0.641 s | 9.5× |
+| Metal | Apple M4 Pro, 20-core GPU | all four | 24.498 s | 1.626 s | 15.1× |
+| CPU | Apple M4 Pro, 14 CPU cores | one | 62.35 s | 3.49 s | 17.9× |
+| CPU | Apple M4 Pro, 14 CPU cores | all four | not run | 6.56 to 6.76 s | |
+
+The CPU "before" is one run of the plain scan at `1d2b9e6`. The RTX 3090 of
+the tables above has not run the bitplane search, so its 0.72 s stays the
+latest figure for that card. Against the earlier rows of this file, the
+Metal backend went from 7.49 s to 0.641 s and the CPU backend from 74.6 s to
+3.49 s on the same laptop.

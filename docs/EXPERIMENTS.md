@@ -2093,3 +2093,246 @@ CUDA path. The match variants repeated their earlier medians within 0.01 ms:
 | `src/backends/cuda/bitplanes.cuh` | `25db2273499b24e4d6980e0bf81a3cbb951cdd6a081bd2d901f3de7da588aed2` |
 | `experiments/rng-reduction/flat_cuda.cu` | `129a170f7022cd72dff36a81f653cdb54166c4129480a3ba65ce08a8ece0d508` |
 | `experiments/rng-reduction/diagnostic_kernels.cuh` | `d3f33b6ea1d8bb85b91194b2d6195a901d334dad4bb0ac187b2017228defb6a5` |
+
+### Bitplane search on the Metal backend (M4, local)
+
+Uncommitted on top of `6afb58d`, on an Apple M4 Pro with the 20-core GPU and
+macOS 26.5.2.
+
+The Metal shader is now `texture_rules.hpp`, `match.metal`,
+`bitplanes/layout.hpp`, `bitplanes/match.hpp` and the new `bitplanes.metal`
+pasted together, so the Metal kernels call the same `filter_word` and
+`survivor_matches` as CUDA and the CPU. To compile as Metal Shading Language
+the shared headers name the address space of constants and buffer pointers
+through `TF_CONSTANT` and `TF_BUFFER`, take `Layout` by value, and no longer
+use `half` as a variable name, which is a type there. The fill's index
+arithmetic moved into a shared `field_word`, which the CUDA kernel, the CPU
+fill and the unit test now call too. The duplicated `run_shared_search` body
+of the backends moved to `bitplanes/shared_search.hpp`.
+
+`src/backends/metal/bitplane_search.mm` runs one command buffer per slab: the
+fill, then one match per direction. A kernel counts a pass's matches in 32
+bits, so the planner takes a row limit and a Metal slab holds at most
+2^32 - 1 candidates. On W that is 1,717 z rows per slab. The field is one
+GPU-only buffer of at most 1 GiB, kept between calls. It runs for every
+version when the formation is eligible, `TF_METAL_BITPLANES=0` forces the
+plain kernel, and `TF_METAL_BITPLANES_TRACE=1` reports the path.
+
+Measured on W, kernel seconds:
+
+| Path | One direction | All directions |
+|---|---:|---:|
+| Plain kernel (`TF_METAL_BITPLANES=0`) | 6.12125 / 6.12105 | 24.498 (one run) |
+| Bitplanes | 0.653785 / 0.641486 / 0.641278 / 0.641454 / 0.641418 | 1.62536 / 1.62566 / 1.62572 |
+
+By the medians, bitplanes were 9.5 times faster on one direction and 15.1
+times faster on all four.
+
+Every version, one synthetic 24-block top-face formation each in a volume of
+1.25e10 positions (100,001 by 25 by 5,001), one direction, three runs each:
+
+| Version | Plain kernel | Bitplanes | Ratio |
+|---:|---|---|---:|
+| 0 | 0.608037 / 0.608078 / 0.608273 | 0.087396 / 0.069947 / 0.069854 | 8.7 |
+| 1 | 0.628759 / 0.628691 / 0.628685 | 0.082165 / 0.082169 / 0.082162 | 7.7 |
+| 2 | 0.439465 / 0.439141 / 0.439460 | 0.055628 / 0.055629 / 0.055629 | 7.9 |
+| 3 | 1.45032 / 1.45001 / 1.45030 | 0.171771 / 0.171767 / 0.171759 | 8.4 |
+| 4 | 1.20932 / 1.20915 / 1.20931 | 0.132913 / 0.132910 / 0.132903 | 9.1 |
+
+Where the time goes on W, one direction, from temporary switches that are not
+in the tree:
+
+| Run | Kernel seconds |
+|---|---|
+| Fill only, no match | 0.342574 / 0.329735 / 0.329953 |
+| Fill and filter, survivors counted but not checked, 32-bit field index | 0.553681 / 0.540396 / 0.540428 |
+| Full search, 32-bit field index | 0.620247 / 0.613414 / 0.613501 |
+
+So the fill is about half of the search, and by subtraction the filter is
+about 0.21 s and the survivor check about 0.07 s.
+
+Tried and ruled out on W, one direction, three runs each unless noted:
+
+| Change | Kernel seconds |
+|---|---|
+| Match threadgroup 32 by 1 by 8 (kept) | 0.655399 / 0.641412 / 0.641455 |
+| Match threadgroup 32 by 8 by 1 | 0.643479 / 0.643521 / 0.643712 |
+| Match threadgroup 64 by 1 by 4 | 0.641609 / 0.641655 / 0.641870 |
+| Match threadgroup 128 by 1 by 2 | 0.641837 / 0.642090 / 0.642109 |
+| Match threadgroup 256 by 1 by 1 | 0.642869 / 0.642891 / 0.642870 |
+| Match threadgroup 32 by 1 by 1 | 0.642450 / 0.643704 / 0.642490 |
+| Match threadgroup 32 by 1 by 32 | 0.641627 / 0.641317 / 0.641348 |
+| Match threadgroup 64 by 4 by 4 | 0.642411 / 0.642287 / 0.642584 |
+| Match threadgroup 512 by 1 by 1 | 0.643725 / 0.643650 / 0.643885 |
+| Match threadgroup 1024 by 1 by 1 | 0.643756 / 0.643855 / 0.643707 |
+| Fill threadgroup, six shapes from 32 by 1 by 1 to 32 by 32 by 1, two runs each | 0.641185 to 0.641532 |
+| Match grid with z rows before y levels | 0.660816 / 0.643367 / 0.643474 |
+| 32-bit divide and residue in `filter_word` | 0.659690 / 0.641924 / 0.642188 |
+| 32-bit field index in `filter_word` as well | 0.620247 / 0.613414 / 0.613501 |
+
+Threadgroup shape and grid order do not matter on this GPU. The 32-bit field
+index is 4.4% faster and exact while the field has fewer than 2^32 words,
+which every backend's budget already guarantees, but it is not adopted: it
+changes the shared filter and has not been measured on CUDA.
+
+A defect in the committed plain Metal kernel turned up in the differential.
+Each dispatch rounds its z range up to whole threadgroups of depth 8, and
+the kernel only cut at the search's last z, so the rows past the end of one
+dispatch were searched again by the next. A match in such a row was reported
+twice: `6afb58d` prints one synthetic version 4 match twice in a 53,057 by 92
+by 2,438 volume. The dispatch now passes its own last row. W has 429 rows per
+dispatch, which leaves three such rows after each one.
+
+Correctness checks:
+
+- `make test`: 21 cases, 787,054 assertions. The brute-force test now builds
+  its field with `field_word`, and a new case covers the planner's row limit.
+- `test/e2e.sh` on Metal, by default and under `TF_METAL_BITPLANES=0`.
+- A differential of 90 random formations (versions 0 to 4, 9 to 26 blocks, 0
+  to 70% side faces, every third in a volume wide enough for several slabs)
+  searched in their own direction and with `all`, bitplanes against the plain
+  kernel after the fix above: 180 runs, 64 of them on the bitplane path, 93
+  with more than one match, no difference in the sorted match lines. With
+  bitplanes off an `all` search prints direction by direction, so the order
+  of the lines differs.
+- A checkpoint written after one slice of W with `all` resumed under
+  `TF_METAL_BITPLANES=0`, found the match and removed the file.
+- The CPU backend after the shared-code changes: 4.696 / 4.612 / 4.610 s on W
+  for one direction and 11.537 s for all, a 60-formation differential against
+  the plain scan with no difference, and `FAST=1 test/e2e.sh`.
+
+### Stride between hashed rows on Metal and the CPU (M4, local)
+
+Run in a scratch copy of the Metal-port tree with `STRIDE` edited, on W, one
+direction, kernel seconds. The machine was also running other work, so stride
+5 reads a little slower here than in the entry above.
+
+| Stride | Metal | CPU | Path |
+|---:|---|---|---|
+| 3 | 0.872697 / 0.891036 / 0.850124 | 7.107 / 7.190 | bitplanes |
+| 4 | 0.726400 / 0.701695 / 0.700176 | 5.975 / 5.403 | bitplanes |
+| 5 (kept) | 0.665640 / 0.660881 / 0.651514 | 5.014 / 4.676 | bitplanes |
+| 6 | 0.693320 / 0.675013 / 0.669906 | 5.318 / 5.195 | bitplanes |
+| 7 | 6.14352 / 6.29855 / 6.42290 | 64.51 / 61.64 | plain |
+| 8 | 6.13444 / 6.12175 / 6.12190 | 63.38 / 64.33 | plain |
+| 10 | 6.14486 / 6.12808 / 6.13167 | 63.72 / 64.20 | plain |
+
+Stride 5 is the fastest on both backends. From stride 7 the reference
+formation has a z coset with fewer than four filter bits, so the search is
+not eligible and takes the plain path. A longer stride is ruled out.
+
+CPU stage split on W at stride 5, from temporary switches in the same copy,
+three runs each:
+
+| Run | Kernel seconds |
+|---|---|
+| Full search | 4.674 / 4.628 / 4.875 |
+| Survivors counted but not checked | 5.134 / 4.998 / 4.587 |
+| Fill only, no match | 2.557 / 2.556 / 2.534 |
+
+The fill is about 55% of the CPU search. The filter is the rest, about
+2.1 s, and the survivor check is below the run-to-run noise.
+
+### Row-at-a-time filter on the CPU backend (M4, local)
+
+Tried in the same scratch copy, not in the tree. The CPU match called the
+shared `filter_word` once per candidate word. The variant keeps one mask per
+candidate word of a (y, z) row and applies each plane check of the row's
+coset to the whole row in one loop, with the shift-zero case split out and
+the wanted bit folded into an XOR, so each pass has no branch and no early
+exit. Survivors are then checked as before.
+
+Measured on W, kernel seconds:
+
+| CPU filter | One direction | All directions |
+|---|---|---|
+| Per word (in the tree) | 4.696 / 4.612 / 4.610 | 11.537 |
+| Per row | 3.786 / 3.482 / 3.538 | 6.758 |
+
+By the medians the row filter is 1.30 times faster on one direction, and 1.71
+times faster on all four from one run each. With the fill at about 2.55 s,
+the filter itself went from about 2.1 s to about 1.0 s per direction.
+
+Checks in the copy: 150 random formations searched in their own direction and
+with `all` against the plain scan (300 runs, 107 on the bitplane path, 128
+with more than one match) with no difference, and `FAST=1 test/e2e.sh`.
+
+The row filter then went into the tree as
+`src/backends/cpu/row_filter.hpp`, called by the CPU match. The brute-force
+unit test now requires `filter_row` to equal `filter_word` for every word in
+every version (`make test`: 21 cases, 790,564 assertions). In the tree it
+measured 3.493 / 3.513 / 3.462 s on W for one direction and 6.558 / 6.764 s
+for all four. The 150-formation differential against the plain scan again
+showed no difference in 300 runs, and `FAST=1 test/e2e.sh` passed by default
+and under `TF_CPU_BITPLANES=0`. The shared headers are untouched by this
+step.
+
+### CPU tile sizes with the row filter (M4, local)
+
+W, one direction, three runs each in kernel seconds, y tile 32 throughout.
+The first and last rows are the same default configuration.
+
+| x | z | Runs |
+|---:|---:|---|
+| 4096 | 64 | 3.512 / 3.555 / 3.472 |
+| 4096 | 128 | 3.452 / 3.656 / 3.408 |
+| 4096 | 256 | 3.502 / 3.341 / 3.418 |
+| 4096 | 512 | 3.377 / 3.328 / 3.298 |
+| 4096 | 1024 | 3.328 / 3.356 / 3.342 |
+| 8192 | 64 | 3.422 / 3.488 / 3.841 |
+| 8192 | 256 | 4.172 / 3.689 / 3.796 |
+| 16384 | 256 | 3.330 / 3.325 / 3.339 |
+| 2048 | 256 | 3.352 / 3.334 / 3.348 |
+| 2048 | 512 | 3.394 / 3.329 / 3.355 |
+| 2048 | 1024 | 3.428 / 3.393 / 3.363 |
+| 1024 | 512 | 3.589 / 3.680 / 3.616 |
+| 4096 | 64 | 3.472 / 3.981 / 3.581 |
+
+The best configurations are about 5% faster than the default, which is close
+to the spread of the default's own six runs (3.47 to 3.98 s). A z tile of 512
+also leaves a volume under 512 rows deep and 4,096 wide as a single tile for
+one thread. The default stays at 4096 by 32 by 64.
+
+### Metal-port shared code on Narval A100 (job 9511085)
+
+`test/validate_cuda.sh` ran with `HARNESS_MODES=all` on the Metal-port tree,
+uncommitted on top of `6afb58d`, on `ng10607` with one A100-SXM4-40GB,
+`gcc/12.3`, CUDA 12.9 and `sm_80`. All 31 gates passed. The tree it ran did
+not yet have the CPU row filter, its unit-test assertion or the `test/e2e.sh`
+change, none of which the CUDA build compiles.
+
+Median CLI kernel time over five alternating pairs, in seconds:
+
+| Workload | Standard (`TF_CUDA_BITPLANES=0`) | Bitplanes (default) |
+|---|---:|---:|
+| one direction | 0.681504 | 0.125269 |
+| all directions | 2.725240 | 0.334495 |
+
+Job `9464541` measured 0.125219 s and 0.334658 s, so taking `Layout` by
+value, the shared `field_word` and the shared `run_shared_search` body did not
+measurably change the CUDA path. The harness repeated 72.531 ms for the
+production match and 68.608 ms for z-major.
+
+| Source | SHA-256 |
+|---|---|
+| `src/backends/cuda/search.cu` | `4ee232e3e678e22f99dd465ea89920c03f5b899f50a150c56bc86993d6cf2689` |
+| `src/backends/cuda/bitplanes.cuh` | `df2545e8753c1e1232ec00b91237f23759ae215ff66fbe93526ed9eaa61890c0` |
+| `src/bitplanes/layout.hpp` | `f85c1d7e2455f3461f369c5a5f1af16c50652741e9593b1127ecc040d83e1df0` |
+| `src/bitplanes/match.hpp` | `e23c7ec2155abc3443b8e71d34986b9994476c3e6828bc50e60c6cdcc0598bcd` |
+| `src/bitplanes/plan.hpp` | `9625bc8141d62d53224785396b6726af031e4334e23bacb82dffe7f2f573f107` |
+| `src/bitplanes/shared_search.hpp` | `2867bdad4dba6fc497ef74f80a2523d74503c1e42f61f5a422d0c49a5ec33a60` |
+| `src/bitplanes/plan.cpp` | `ec00281071ede7767d550f85857a62cd9939577bb5bd4cfa300aa48ce804444b` |
+| `experiments/rng-reduction/flat_cuda.cu` | `129a170f7022cd72dff36a81f653cdb54166c4129480a3ba65ce08a8ece0d508` |
+| `experiments/rng-reduction/diagnostic_kernels.cuh` | `d3f33b6ea1d8bb85b91194b2d6195a901d334dad4bb0ac187b2017228defb6a5` |
+
+The local files have the same hashes.
+
+### e2e synthetic round-trips checked against the CPU reference (M4, local)
+
+The synthetic round-trips in `test/e2e.sh` required exactly one match, which
+failed whenever a random formation matched at a second place. They now
+require the planted origin and a match list equal to `build/cpu_search`'s.
+On the Metal build, 60 consecutive runs of the suite all passed. One of them
+hit the case: `synthetic v3 dir3 (all mode)` reported two matches, the same
+two as the CPU reference. A run of the suite took about 19 s, up from about
+6 s, because the CPU tool now searches each of the 40 round-trip volumes.
