@@ -1,0 +1,16 @@
+BasedOnStyle: LLVM
+ColumnLimit: 110
+PointerAlignment: Left
+AccessModifierOffset: -2
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortLambdasOnASingleLine: Inline
+BreakConstructorInitializers: BeforeComma
+PackConstructorInitializers: Never
+NamespaceIndentation: None
+SortIncludes: Never
+AlwaysBreakTemplateDeclarations: Yes
+IndentPPDirectives: None
+ReflowComments: false
+BreakStringLiterals: false
