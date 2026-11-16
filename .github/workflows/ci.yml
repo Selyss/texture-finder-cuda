@@ -41,7 +41,11 @@ jobs:
         run: make BACKEND=metal
       - name: Metal smoke run (skipped result tolerated if runner lacks a GPU)
         continue-on-error: true
-        run: ./build/main -108730 -108710 -60 -50 -69740 -69730 0 test/fixtures/formation_a.txt 0
+        run: |
+          read -r x y z < <(sed -n 's/.*Expected match: \*\*x=\(.*\) y=\(.*\) z=\(.*\)\*\*.*/\1 \2 \3/p' \
+              test/fixtures/formation_a.expected.md)
+          ./build/main $((x - 7)) $((x + 13)) $((y - 6)) $((y + 4)) $((z - 4)) $((z + 6)) 0 \
+              test/fixtures/formation_a.txt 0
       - name: CPU backend end-to-end (reduced fixture volume)
         run: |
           make clean
