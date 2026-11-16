@@ -1809,3 +1809,29 @@ Bitplane medians in job `9446997`, before the split, were 0.126441 s and
 | `src/backends/cuda/search.cu` | `04d996bbbe1873969af41260dfe9c74f205a3a9284867a024d2423fe57f461e2` |
 | `src/backends/cuda/bitplanes.cuh` | `2415cf8c52d1ac0b8558106fe36536412be0fda9f994634b8a1f6db73b855fd1` |
 | `experiments/rng-reduction/flat_cuda.cu` | `3072d8c6f6a4cddec48efda1932a7051bfc209f0732aa53df538798cd10c0e9b` |
+
+### Version enum on Narval A100 (job 9454100)
+
+The version became `enum class Version`, and the CPU path, the standard CUDA
+kernel and the Metal shader now share one dispatch, `texture_from_mix`, in
+place of three separate chains. The standard kernel's inner loop calls it with
+its template constant. `test/validate_cuda.sh` ran on the uncommitted tree on
+`ng31205` with one A100-SXM4-40GB, `gcc/12.3`, CUDA 12.9 and `-std=c++20`
+targeting `sm_80`. All 21 gates passed.
+
+Median CLI kernel time over five alternating pairs, in seconds:
+
+| Workload | Standard | Bitplanes |
+|---|---:|---:|
+| one direction | 0.682195 | 0.126295 |
+| all directions | 2.728590 | 0.339082 |
+
+Standard one-direction medians in the two previous jobs, on other nodes, were
+0.682276 s (`9453126`) and 0.681322 s (`9453658`), so the shared dispatch did
+not measurably change the standard kernel.
+
+| Source | SHA-256 |
+|---|---|
+| `src/backends/cuda/search.cu` | `3b2838e24a3023d223c5a420eeb8fafb99bc1c932e5423f18370922d703087b5` |
+| `src/backends/cuda/bitplanes.cuh` | `2415cf8c52d1ac0b8558106fe36536412be0fda9f994634b8a1f6db73b855fd1` |
+| `experiments/rng-reduction/flat_cuda.cu` | `74c524540d5bcf2f800b8f78689b28a180adeca18da948384cb8372b578f109c` |
