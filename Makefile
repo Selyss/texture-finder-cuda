@@ -43,6 +43,11 @@ CUDA_SRC = src/backends/cuda/search.cu src/backends/cuda/bitplane_search.cu $(BI
 CUDA_HEADERS = $(wildcard src/backends/cuda/*.cuh src/backends/cuda/*.hpp)
 CPU_SRC = src/backends/cpu/search.cpp src/backends/cpu/bitplane_search.cpp $(BITPLANE_SRC)
 CPU_HEADERS = $(wildcard src/backends/cpu/*.hpp)
+METAL_SRC = src/backends/metal/search.mm src/backends/metal/bitplane_search.mm src/backends/metal/device.mm $(BITPLANE_SRC)
+METAL_HEADERS = $(wildcard src/backends/metal/*.hpp)
+# The shader is these files pasted together in this order.
+SHADER_SRC = src/texture/texture_rules.hpp src/backends/metal/match.metal src/bitplanes/layout.hpp \
+             src/bitplanes/match.hpp src/backends/metal/bitplanes.metal
 
 CCBIN = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.42.34433\bin\Hostx64\x64\cl.exe"
 
@@ -60,8 +65,8 @@ build/main: $(COMMON_SRC) $(CUDA_SRC) $(COMMON_HEADERS) $(CUDA_HEADERS) $(BACKEN
 	@mkdir -p build
 	$(NVCC) $(NVCCFLAGS) $(COMMON_SRC) $(CUDA_SRC) -o $@
 else ifeq ($(BACKEND),metal)
-build/main: $(COMMON_SRC) src/backends/metal/search.mm build/tf_shader_src.h $(COMMON_HEADERS) $(BACKEND_STAMP)
-	$(CXX) $(CXXFLAGS) -Ibuild -fobjc-arc $(COMMON_SRC) src/backends/metal/search.mm \
+build/main: $(COMMON_SRC) $(METAL_SRC) build/tf_shader_src.h $(COMMON_HEADERS) $(METAL_HEADERS) $(BACKEND_STAMP)
+	$(CXX) $(CXXFLAGS) -Ibuild -fobjc-arc $(COMMON_SRC) $(METAL_SRC) \
 	    -framework Metal -framework Foundation -o $@
 else
 build/main: $(COMMON_SRC) $(CPU_SRC) $(COMMON_HEADERS) $(CPU_HEADERS) $(BACKEND_STAMP)
@@ -69,11 +74,12 @@ build/main: $(COMMON_SRC) $(CPU_SRC) $(COMMON_HEADERS) $(CPU_HEADERS) $(BACKEND_
 	$(CXX) $(CXXFLAGS) $(COMMON_SRC) $(CPU_SRC) -pthread -o $@
 endif
 
-# The Metal shader source is texture_rules.hpp + match.metal wrapped into one C++
-# raw string literal, so the shader compiles the same RNG single-source.
-build/tf_shader_src.h: src/texture/texture_rules.hpp src/backends/metal/match.metal
+# The Metal shader source is the shared headers and the kernels wrapped into
+# one C++ raw string literal, so the shader compiles the same RNG and the same
+# bitplane code single-source.
+build/tf_shader_src.h: $(SHADER_SRC)
 	@mkdir -p build
-	{ printf '%s\n' 'R"TFMSL('; cat src/texture/texture_rules.hpp src/backends/metal/match.metal; printf '%s\n' ')TFMSL"'; } > $@
+	{ printf '%s\n' 'R"TFMSL('; cat $(SHADER_SRC); printf '%s\n' ')TFMSL"'; } > $@
 
 # On Windows run e.g. `make windows NVCC=nvcc` (the Unix-path default does
 # not apply there); the mkdir line tolerates the directory already existing.
