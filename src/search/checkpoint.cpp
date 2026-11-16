@@ -28,7 +28,7 @@ std::uint64_t checkpoint_signature(const SearchRequest& request) {
   const auto& bounds{request.bounds};
   std::ostringstream text;
   text << bounds.x_min << " " << bounds.x_max << " " << bounds.y_min << " " << bounds.y_max << " "
-       << bounds.z_min << " " << bounds.z_max << " " << request.version << " ";
+       << bounds.z_min << " " << bounds.z_max << " " << static_cast<int>(request.version) << " ";
   for (const int direction : request.directions)
     text << direction << ",";
   text << "\n";

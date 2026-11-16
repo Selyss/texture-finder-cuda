@@ -65,7 +65,7 @@ struct UsageError : std::runtime_error {
     if (bounds.x_min > bounds.x_max || bounds.y_min > bounds.y_max || bounds.z_min > bounds.z_max)
       throw UsageError{"min bound exceeds max bound"};
 
-    const auto version{parse_int(args[6], "version", 0, NUM_VERSIONS - 1)};
+    const auto version{static_cast<Version>(parse_int(args[6], "version", 0, NUM_VERSIONS - 1))};
     auto directions{std::string_view{args[8]} == "all" ? std::vector{0, 1, 2, 3}
                                                        : std::vector{parse_int(args[8], "direction", 0, 3)}};
     auto formation{parse_formation_file(args[7])};

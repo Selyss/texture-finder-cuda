@@ -29,6 +29,20 @@ typedef unsigned long uint64_t;
 #define TF_NOEXCEPT noexcept
 #endif
 
+// The game and renderer versions that roll rotations differently. The values
+// are the CLI's version argument and are written into checkpoint signatures,
+// so they are never renumbered.
+enum class Version : int {
+  modern = 0,    // 1.21.2+
+  legacy = 1,    // 1.13 - 1.21.1
+  vanilla12 = 2, // <= 1.12.2
+  sodium = 3,    // Sodium 1.0-4.1 (MC 1.16 - 1.18.2)
+  sodium19 = 4,  // Sodium 4.2-4.8 (MC 1.19 - 1.19.3)
+};
+#ifndef __METAL_VERSION__ // MSL has no program-scope constants
+constexpr int NUM_VERSIONS = 5;
+#endif
+
 // Reference semantics: 19MisterX98/TextureRotations (texture/*.java) and the
 // vanilla Mth.get_seed position hash. Java overflow wraps; C++ signed overflow
 // is UB, so every wrapping step below is routed through unsigned arithmetic.
@@ -187,22 +201,25 @@ TF_NODISCARD TF_HOST_DEVICE inline int get_texture_modern(int32_t x, int32_t y, 
   return modern_from_coord_random(coord_random(x, y, z), mod);
 }
 
-// Runtime dispatch over the version constants in formation.hpp (host tools
-// and the CPU backend; the GPU kernels dispatch at compile time instead).
-// 0 = modern (1.21.2+), 1 = legacy (1.13-1.21.1), 2 = vanilla <=1.12.2,
-// 3 = Sodium 1.16-1.18.2, 4 = Sodium 1.19-1.19.3.
-TF_NODISCARD TF_HOST_DEVICE inline int get_texture_for_version(int version, int32_t x, int32_t y, int32_t z,
-                                                               int mod) TF_NOEXCEPT {
+// The rotation at a position whose coord_mix is `mix`, for any version. The
+// GPU kernels pass a compile-time version, so the switch folds away there.
+TF_NODISCARD TF_HOST_DEVICE inline int texture_from_mix(Version version, int64_t mix, int mod) TF_NOEXCEPT {
   switch (version) {
-  case 1:
-    return get_texture_legacy(x, y, z, mod);
-  case 2:
-    return get_texture_vanilla12(x, y, z, mod);
-  case 3:
-    return get_texture_sodium(x, y, z, mod);
-  case 4:
-    return get_texture_sodium19(x, y, z, mod);
-  default:
-    return get_texture_modern(x, y, z, mod);
+  case Version::legacy:
+    return legacy_from_coord_random(mix >> 16, mod);
+  case Version::vanilla12:
+    return vanilla12_from_mix(mix, mod);
+  case Version::sodium:
+    return sodium_from_coord_random(mix >> 16, mod);
+  case Version::sodium19:
+    return sodium19_from_coord_random(mix >> 16, mod);
+  case Version::modern:
+    break;
   }
+  return modern_from_coord_random(mix >> 16, mod);
+}
+
+TF_NODISCARD TF_HOST_DEVICE inline int get_texture_for_version(Version version, int32_t x, int32_t y,
+                                                               int32_t z, int mod) TF_NOEXCEPT {
+  return texture_from_mix(version, coord_mix(x, y, z), mod);
 }

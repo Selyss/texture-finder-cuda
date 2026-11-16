@@ -47,17 +47,7 @@ kernel void match_formation(device const TfBlock* blocks [[buffer(0)]], constant
     const int expected = b.w & 0xff;
     const int mask = b.w >> 8;
     const int64_t mix = coord_mix(x + b.x, y + b.y, z + b.z);
-    int v;
-    if (TF_VERSION == 1)
-      v = legacy_from_coord_random(mix >> 16, 4);
-    else if (TF_VERSION == 2)
-      v = vanilla12_from_mix(mix, 4);
-    else if (TF_VERSION == 3)
-      v = sodium_from_coord_random(mix >> 16, 4);
-    else if (TF_VERSION == 4)
-      v = sodium19_from_coord_random(mix >> 16, 4);
-    else
-      v = modern_from_coord_random(mix >> 16, 4);
+    const int v = texture_from_mix(Version(TF_VERSION), mix, 4);
     if ((v & mask) != expected)
       return;
   }

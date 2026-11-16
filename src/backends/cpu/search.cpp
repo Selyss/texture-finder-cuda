@@ -30,7 +30,7 @@ struct Position {
 struct Job {
   SearchBounds bounds;
   std::span<const BlockInfo> blocks;
-  int version;
+  Version version;
   std::uint64_t positions;
   std::atomic<std::uint64_t> cursor{0};
 };
@@ -58,7 +58,7 @@ void advance(Position& at, const SearchBounds& bounds) {
   ++at.y;
 }
 
-[[nodiscard]] bool formation_matches(std::span<const BlockInfo> blocks, int version, Position origin) {
+[[nodiscard]] bool formation_matches(std::span<const BlockInfo> blocks, Version version, Position origin) {
   return std::ranges::all_of(blocks, [&](const BlockInfo& block) {
     const int mod{block.is_side ? MOD_SIDE : MOD_TOP_BOTTOM};
     return get_texture_for_version(version, origin.x + block.x, origin.y + block.y, origin.z + block.z,
@@ -86,7 +86,8 @@ void search_chunks(Job& job, WorkerResult& result) {
 
 } // namespace
 
-DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockInfo>& blocks, int version) {
+DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockInfo>& blocks,
+                           Version version) {
   if (blocks.empty())
     throw std::invalid_argument{"empty formation"};
 
@@ -118,11 +119,11 @@ DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockIn
   return result;
 }
 
-bool shared_search_enabled(int) {
+bool shared_search_enabled(Version) {
   return false;
 }
 
 SharedSearchResult run_shared_search(const SearchBounds& bounds,
-                                     std::span<const std::vector<BlockInfo>> directions, int version) {
+                                     std::span<const std::vector<BlockInfo>> directions, Version version) {
   return search_each_direction(bounds, directions, version);
 }

@@ -31,7 +31,7 @@ constexpr std::array<std::string_view, NUM_VERSIONS> VERSION_NAMES{"1.21.2+", "1
 
 void print_header(const SearchRequest& request) {
   std::cout << "Backend: " << search_backend_name() << "\n"
-            << "Version: " << VERSION_NAMES[request.version] << "\n";
+            << "Version: " << VERSION_NAMES[static_cast<std::size_t>(request.version)] << "\n";
   if (request.directions.size() == 1)
     std::cout << "Facing: " << DIRECTION_NAMES[request.directions.front()] << "\n";
   else
@@ -289,7 +289,7 @@ private:
   }
 
   SearchBounds bounds_;
-  int version_;
+  Version version_;
   std::span<const int> directions_;
   const std::vector<BlockInfo>& formation_;
   std::uint64_t layer_size_;

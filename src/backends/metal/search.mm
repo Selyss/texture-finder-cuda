@@ -52,9 +52,10 @@ id<MTLDevice> s_device;
 id<MTLCommandQueue> s_queue;
 id<MTLComputePipelineState> s_pso[NUM_VERSIONS];
 
-id<MTLComputePipelineState> ensure_pipeline(int version) {
-  if (s_pso[version])
-    return s_pso[version];
+id<MTLComputePipelineState> ensure_pipeline(Version version) {
+  const auto index{static_cast<int>(version)};
+  if (s_pso[index])
+    return s_pso[index];
 
   if (!s_device) {
     s_device = MTLCreateSystemDefaultDevice();
@@ -72,15 +73,14 @@ id<MTLComputePipelineState> ensure_pipeline(int version) {
     fail("shader compilation failed", err);
 
   MTLFunctionConstantValues* consts = [MTLFunctionConstantValues new];
-  int version_const = version;
-  [consts setConstantValue:&version_const type:MTLDataTypeInt atIndex:0];
+  [consts setConstantValue:&index type:MTLDataTypeInt atIndex:0];
   id<MTLFunction> fn = [lib newFunctionWithName:@"match_formation" constantValues:consts error:&err];
   if (!fn)
     fail("function specialization failed", err);
   id<MTLComputePipelineState> pso = [s_device newComputePipelineStateWithFunction:fn error:&err];
   if (!pso)
     fail("pipeline creation failed", err);
-  s_pso[version] = pso;
+  s_pso[index] = pso;
   return pso;
 }
 
@@ -96,7 +96,8 @@ template <class T>
 
 } // namespace
 
-DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockInfo>& blocks, int version) {
+DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockInfo>& blocks,
+                           Version version) {
   if (blocks.empty())
     throw std::invalid_argument{"empty formation"};
   constexpr auto limit{std::numeric_limits<std::uint64_t>::max()};
@@ -173,11 +174,11 @@ DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockIn
   return result;
 }
 
-bool shared_search_enabled(int) {
+bool shared_search_enabled(Version) {
   return false;
 }
 
 SharedSearchResult run_shared_search(const SearchBounds& bounds,
-                                     std::span<const std::vector<BlockInfo>> directions, int version) {
+                                     std::span<const std::vector<BlockInfo>> directions, Version version) {
   return search_each_direction(bounds, directions, version);
 }

@@ -55,7 +55,7 @@ int main(int argc, char* argv[]) {
     b.z = bz;
     b.is_side = pct(rng) < side_percent;
     const int mod = b.is_side ? MOD_SIDE : MOD_TOP_BOTTOM;
-    b.rotation = get_texture_for_version(version, ox + bx, oy + by, oz + bz, mod);
+    b.rotation = get_texture_for_version(static_cast<Version>(version), ox + bx, oy + by, oz + bz, mod);
     truth.push_back(b);
   }
 

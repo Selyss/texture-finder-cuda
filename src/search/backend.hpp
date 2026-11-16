@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "texture/formation.hpp"
+#include "texture/texture_rules.hpp"
 
 // The interface every backend implements. The build links exactly one of
 // src/backends/{cpu,cuda,metal}; all three share src/texture/texture_rules.hpp
@@ -53,18 +54,18 @@ struct SharedSearchResult {
 // `blocks` is one direction's formation and must not be empty. Checks run in
 // the order given, so the session lists top faces first: they reject more.
 [[nodiscard]] DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockInfo>& blocks,
-                                         int version);
+                                         Version version);
 
 // True when the backend can search several directions in one pass.
-[[nodiscard]] bool shared_search_enabled(int version);
+[[nodiscard]] bool shared_search_enabled(Version version);
 [[nodiscard]] SharedSearchResult run_shared_search(const SearchBounds& bounds,
                                                    std::span<const std::vector<BlockInfo>> directions,
-                                                   int version);
+                                                   Version version);
 
 // run_shared_search for a backend with no shared pass: one direction at a time.
 [[nodiscard]] inline SharedSearchResult
 search_each_direction(const SearchBounds& bounds, std::span<const std::vector<BlockInfo>> directions,
-                      int version) {
+                      Version version) {
   SharedSearchResult result;
   for (const auto& blocks : directions) {
     result.directions.push_back(run_search(bounds, blocks, version));

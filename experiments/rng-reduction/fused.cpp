@@ -28,7 +28,7 @@ struct B {
   int dx, dy, dz, rot;
 };
 static int tex(int64_t x, int y, int64_t z) {
-  return get_texture_for_version(0, (int)x, y, (int)z, 4);
+  return get_texture_for_version(Version::modern, (int)x, y, (int)z, 4);
 }
 static int pmod(int64_t a, int m) {
   int r = (int)(a % m);

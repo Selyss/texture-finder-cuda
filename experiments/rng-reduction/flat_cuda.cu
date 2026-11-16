@@ -496,7 +496,7 @@ SearchResult baseline_search(const SearchBounds& bounds, const std::vector<Block
                              const std::vector<BlockInfo>& sides, float& kernel_ms) {
   auto blocks = tops;
   blocks.insert(blocks.end(), sides.begin(), sides.end());
-  auto result = run_search(bounds, blocks, MODERN_VERSION);
+  auto result = run_search(bounds, blocks, Version::modern);
   kernel_ms = static_cast<float>(result.kernel_seconds * 1000.0);
   return {std::move(result.matches), result.total};
 }

@@ -39,7 +39,7 @@ void check_value(const char* what, int x, int y, int z, int oracle, int ours) {
     report(what, x, y, z, oracle, ours);
 }
 
-bool diff_grid(const std::string& path, const char* what, int version, int mod) {
+bool diff_grid(const std::string& path, const char* what, Version version, int mod) {
   std::ifstream f(path, std::ios::binary);
   if (!f) {
     std::fprintf(stderr, "Cannot open %s\n", path.c_str());
@@ -107,16 +107,16 @@ int main(int argc, char* argv[]) {
   const std::string dir = argv[1];
 
   bool ok = true;
-  ok &= diff_grid(dir + "/legacy_top.bin", "legacy_top", 1, 4);
-  ok &= diff_grid(dir + "/legacy_side.bin", "legacy_side", 1, 2);
-  ok &= diff_grid(dir + "/modern_top.bin", "modern_top", 0, 4);
-  ok &= diff_grid(dir + "/modern_side.bin", "modern_side", 0, 2);
-  ok &= diff_grid(dir + "/vanilla12_top.bin", "vanilla12_top", 2, 4);
-  ok &= diff_grid(dir + "/vanilla12_side.bin", "vanilla12_side", 2, 2);
-  ok &= diff_grid(dir + "/sodium_top.bin", "sodium_top", 3, 4);
-  ok &= diff_grid(dir + "/sodium_side.bin", "sodium_side", 3, 2);
-  ok &= diff_grid(dir + "/sodium19_top.bin", "sodium19_top", 4, 4);
-  ok &= diff_grid(dir + "/sodium19_side.bin", "sodium19_side", 4, 2);
+  ok &= diff_grid(dir + "/legacy_top.bin", "legacy_top", Version::legacy, 4);
+  ok &= diff_grid(dir + "/legacy_side.bin", "legacy_side", Version::legacy, 2);
+  ok &= diff_grid(dir + "/modern_top.bin", "modern_top", Version::modern, 4);
+  ok &= diff_grid(dir + "/modern_side.bin", "modern_side", Version::modern, 2);
+  ok &= diff_grid(dir + "/vanilla12_top.bin", "vanilla12_top", Version::vanilla12, 4);
+  ok &= diff_grid(dir + "/vanilla12_side.bin", "vanilla12_side", Version::vanilla12, 2);
+  ok &= diff_grid(dir + "/sodium_top.bin", "sodium_top", Version::sodium, 4);
+  ok &= diff_grid(dir + "/sodium_side.bin", "sodium_side", Version::sodium, 2);
+  ok &= diff_grid(dir + "/sodium19_top.bin", "sodium19_top", Version::sodium19, 4);
+  ok &= diff_grid(dir + "/sodium19_side.bin", "sodium19_side", Version::sodium19, 2);
   ok &= diff_text(dir + "/extremes.txt", 3072);
   ok &= diff_text(dir + "/random.txt", 1000000);
 

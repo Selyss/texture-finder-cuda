@@ -59,7 +59,7 @@ static_assert(2 * MAX_FORMATION_BLOCKS * sizeof(DevBlock) <= 48 * 1024,
 // almost all the time. Warps grab chunks from a global cursor; within a chunk
 // lane L owns linear positions chunk_base + pull*32 + L, so every position in
 // [0, total) is evaluated exactly once, no matter how the grid is sized.
-template <int VERSION>
+template <Version VERSION>
 __global__ void __launch_bounds__(TF_BLOCK_THREADS)
     match_formation_kernel(SearchBounds b, int total_blocks, unsigned long long total,
                            unsigned long long* chunk_cursor, MatchResult* out,
@@ -150,17 +150,7 @@ __global__ void __launch_bounds__(TF_BLOCK_THREADS)
       const int expected = blk.w & 0xff;
       const int mask = blk.w >> 8;
       const int64_t mix = coord_mix_from_parts(hx + blk.x_term, hz + blk.z_term, y + blk.dy);
-      int v;
-      if (VERSION == LEGACY_VERSION)
-        v = legacy_from_coord_random(mix >> 16, 4);
-      else if (VERSION == VANILLA12_VERSION)
-        v = vanilla12_from_mix(mix, 4);
-      else if (VERSION == SODIUM_VERSION)
-        v = sodium_from_coord_random(mix >> 16, 4);
-      else if (VERSION == SODIUM19_VERSION)
-        v = sodium19_from_coord_random(mix >> 16, 4);
-      else
-        v = modern_from_coord_random(mix >> 16, 4);
+      const int v = texture_from_mix(VERSION, mix, 4);
       if ((v & mask) != expected) {
         bi = -1;
       } else if (++bi == total_blocks) {
@@ -181,19 +171,20 @@ namespace {
 using Count = cuda::MatchBuffer::Count;
 using Kernel = void (*)(SearchBounds, int, Count, Count*, MatchResult*, Count*);
 
-[[nodiscard]] Kernel kernel_for(int version) {
+[[nodiscard]] Kernel kernel_for(Version version) {
   switch (version) {
-  case LEGACY_VERSION:
-    return match_formation_kernel<LEGACY_VERSION>;
-  case VANILLA12_VERSION:
-    return match_formation_kernel<VANILLA12_VERSION>;
-  case SODIUM_VERSION:
-    return match_formation_kernel<SODIUM_VERSION>;
-  case SODIUM19_VERSION:
-    return match_formation_kernel<SODIUM19_VERSION>;
-  default:
-    return match_formation_kernel<MODERN_VERSION>;
+  case Version::legacy:
+    return match_formation_kernel<Version::legacy>;
+  case Version::vanilla12:
+    return match_formation_kernel<Version::vanilla12>;
+  case Version::sodium:
+    return match_formation_kernel<Version::sodium>;
+  case Version::sodium19:
+    return match_formation_kernel<Version::sodium19>;
+  case Version::modern:
+    break;
   }
+  return match_formation_kernel<Version::modern>;
 }
 
 [[nodiscard]] DevBlock device_block(const BlockInfo& block) {
@@ -231,7 +222,7 @@ using Kernel = void (*)(SearchBounds, int, Count, Count*, MatchResult*, Count*);
 }
 
 [[nodiscard]] DirectionResult standard_search(const SearchBounds& bounds, std::span<const BlockInfo> blocks,
-                                              int version, Count positions) {
+                                              Version version, Count positions) {
   std::vector<DevBlock> device_blocks;
   for (const auto& block : blocks)
     device_blocks.push_back(device_block(block));
@@ -262,14 +253,15 @@ void trace(const char* message) {
 
 } // namespace
 
-DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockInfo>& blocks, int version) {
+DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockInfo>& blocks,
+                           Version version) {
   if (blocks.empty() || blocks.size() > 2 * MAX_FORMATION_BLOCKS)
     throw std::invalid_argument{"formation must have 1 to " + std::to_string(2 * MAX_FORMATION_BLOCKS) +
                                 " blocks"};
   const auto positions{checked_volume(bounds)};
 
   if (cuda_bitplanes::requested()) {
-    if (version == MODERN_VERSION && cuda_bitplanes::eligible(blocks)) {
+    if (version == Version::modern && cuda_bitplanes::eligible(blocks)) {
       if (auto output{cuda_bitplanes::search(bounds, std::span{&blocks, 1})}) {
         trace("bitplanes");
         auto& result{output->directions.front()};
@@ -282,12 +274,12 @@ DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockIn
   return standard_search(bounds, blocks, version, positions);
 }
 
-bool shared_search_enabled(int version) {
-  return version == MODERN_VERSION && cuda_bitplanes::requested();
+bool shared_search_enabled(Version version) {
+  return version == Version::modern && cuda_bitplanes::requested();
 }
 
 SharedSearchResult run_shared_search(const SearchBounds& bounds,
-                                     std::span<const std::vector<BlockInfo>> directions, int version) {
+                                     std::span<const std::vector<BlockInfo>> directions, Version version) {
   // Directions that can use bitplanes share one field. The rest run alone.
   std::vector<std::size_t> shared_indices;
   std::vector<std::vector<BlockInfo>> shared_blocks;

@@ -42,9 +42,11 @@ TEST_CASE("get_texture_modern - side faces are the parity of the top roll") {
   for (int x = -64; x <= 64; x++)
     for (int z = -64; z <= 64; z++)
       for (int y : {-64, 0, 200})
-        for (int version = 0; version < NUM_VERSIONS; version++)
+        for (int index = 0; index < NUM_VERSIONS; index++) {
+          const auto version = static_cast<Version>(index);
           CHECK(get_texture_for_version(version, x, y, z, 2) ==
                 get_texture_for_version(version, x, y, z, 4) % 2);
+        }
 }
 
 // Oracle-derived vectors for the other version modes (test/oracle/Dump.java

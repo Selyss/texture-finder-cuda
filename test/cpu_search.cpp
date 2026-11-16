@@ -32,7 +32,7 @@ int main(int argc, char* argv[]) {
   const int x_min = std::atoi(argv[1]), x_max = std::atoi(argv[2]);
   const int y_min = std::atoi(argv[3]), y_max = std::atoi(argv[4]);
   const int z_min = std::atoi(argv[5]), z_max = std::atoi(argv[6]);
-  const int version = std::atoi(argv[7]);
+  const auto version = static_cast<Version>(std::atoi(argv[7]));
 
   std::vector<int> directions;
   const bool all_mode = std::string(argv[9]) == "all";

@@ -10,7 +10,7 @@
 struct SearchRequest {
   SearchBounds bounds;
   std::vector<BlockInfo> formation;
-  int version;
+  Version version;
   std::vector<int> directions; // quarter turns to try, in order
   std::string checkpoint_path; // empty: no checkpoint
 };
