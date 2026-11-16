@@ -149,12 +149,14 @@ Large searches show a live progress line with ETA on stderr and print
 matches as they are found. If the formation is too weak to give a unique
 result in the requested volume, the program says how many blocks to add.
 
-On CUDA, version 0 searches use the bitplane search by default. It reuses
+The CUDA and CPU backends use the bitplane search by default. It reuses
 packed texture rotations to filter candidates before checking the surviving
-positions. Searches with a weak filter or too little available GPU memory
-automatically use the standard CUDA kernel, and `TF_CUDA_BITPLANES=0` in the
-environment forces it for every search.
-Set `TF_CUDA_BITPLANES_TRACE=1` to see which path ran on stderr.
+positions. CUDA uses it for version 0 and the CPU backend for every version.
+Searches with a weak filter, or on CUDA with too little available GPU memory,
+automatically use the plain search. `TF_CUDA_BITPLANES=0` or
+`TF_CPU_BITPLANES=0` in the environment forces the plain search every time.
+Set `TF_CUDA_BITPLANES_TRACE=1` or `TF_CPU_BITPLANES_TRACE=1` to see which
+path ran on stderr.
 In `all` mode, eligible directions share the bitplanes for each search
 slice. Long searches stream matches in slice order, with the facing on each
 line. Existing checkpoints resume in their original order. New slice-first

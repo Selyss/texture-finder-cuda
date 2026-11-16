@@ -1,17 +1,23 @@
-// Portable multithreaded CPU backend, and the readable reference for the GPU
-// ones: it tests every position against every block with the shared texture
-// rules. Threads take chunks of the linearised volume from an atomic cursor.
+// Portable multithreaded CPU backend. The plain scan in this file is the
+// readable reference for every other search path: it tests every position
+// against every block with the shared texture rules, and threads take chunks
+// of the linearised volume from an atomic cursor. Formations that filter well
+// are searched with bitplanes instead (bitplane_search.hpp), which must return
+// the same matches.
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <limits>
 #include <span>
 #include <stdexcept>
 #include <thread>
-#include <tuple>
 #include <vector>
 
+#include "backends/cpu/bitplane_search.hpp"
+#include "backends/cpu/worker_matches.hpp"
+#include "bitplanes/plan.hpp"
 #include "search/backend.hpp"
 #include "texture/texture_rules.hpp"
 
@@ -33,11 +39,6 @@ struct Job {
   Version version;
   std::uint64_t positions;
   std::atomic<std::uint64_t> cursor{0};
-};
-
-struct WorkerResult {
-  std::vector<MatchResult> matches; // at most MAX_MATCHES
-  std::uint64_t found{0};
 };
 
 // Positions are numbered x fastest, then z, then y.
@@ -66,7 +67,7 @@ void advance(Position& at, const SearchBounds& bounds) {
   });
 }
 
-void search_chunks(Job& job, WorkerResult& result) {
+void search_chunks(Job& job, WorkerMatches& found) {
   for (;;) {
     const auto first{job.cursor.fetch_add(CHUNK_POSITIONS)};
     if (first >= job.positions)
@@ -75,13 +76,33 @@ void search_chunks(Job& job, WorkerResult& result) {
 
     auto at{position_at(job.bounds, first)};
     for (auto index{first}; index < end; ++index, advance(at, job.bounds)) {
-      if (!formation_matches(job.blocks, job.version, at))
-        continue;
-      ++result.found;
-      if (result.matches.size() < MAX_MATCHES)
-        result.matches.push_back({at.x, at.y, at.z});
+      if (formation_matches(job.blocks, job.version, at))
+        found.add({at.x, at.y, at.z});
     }
   }
+}
+
+[[nodiscard]] DirectionResult plain_scan(const SearchBounds& bounds, std::span<const BlockInfo> blocks,
+                                        Version version, std::uint64_t positions) {
+  Job job{.bounds = bounds, .blocks = blocks, .version = version, .positions = positions};
+  std::vector<WorkerMatches> workers(std::max(1u, std::thread::hardware_concurrency()));
+
+  const auto started{std::chrono::steady_clock::now()};
+  {
+    std::vector<std::jthread> threads;
+    for (auto& worker : workers)
+      threads.emplace_back([&job, &worker] { search_chunks(job, worker); });
+  } // joins
+  const std::chrono::duration<double> elapsed{std::chrono::steady_clock::now() - started};
+
+  auto result{collect_matches(workers, [](const WorkerMatches& worker) -> const WorkerMatches& { return worker; })};
+  result.kernel_seconds = elapsed.count();
+  return result;
+}
+
+void trace(const char* message) {
+  if (cpu_bitplanes::trace_enabled())
+    std::fprintf(stderr, "CPU search: %s\n", message);
 }
 
 } // namespace
@@ -96,34 +117,55 @@ DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockIn
   if (ny > limit / nz || nx > limit / (ny * nz))
     throw std::invalid_argument{"search volume too large"};
 
-  Job job{.bounds = bounds, .blocks = blocks, .version = version, .positions = nx * ny * nz};
-  std::vector<WorkerResult> workers(std::max(1u, std::thread::hardware_concurrency()));
-
-  const auto started{std::chrono::steady_clock::now()};
-  {
-    std::vector<std::jthread> threads;
-    for (auto& worker : workers)
-      threads.emplace_back([&job, &worker] { search_chunks(job, worker); });
-  } // joins
-  const std::chrono::duration<double> elapsed{std::chrono::steady_clock::now() - started};
-
-  DirectionResult result{.kernel_seconds = elapsed.count()};
-  for (const auto& worker : workers) {
-    result.total += worker.found;
-    const auto room{MAX_MATCHES - result.matches.size()};
-    const auto take{std::min(room, worker.matches.size())};
-    result.matches.insert(result.matches.end(), worker.matches.begin(), worker.matches.begin() + take);
+  if (cpu_bitplanes::enabled() && bitplanes::eligible(blocks)) {
+    if (auto output{cpu_bitplanes::search(bounds, std::span{&blocks, 1}, version)}) {
+      trace("bitplanes");
+      auto& result{output->directions.front()};
+      result.kernel_seconds = output->seconds;
+      return std::move(result);
+    }
   }
-  result.truncated = result.total > MAX_MATCHES;
-  std::ranges::sort(result.matches, {}, [](const MatchResult& m) { return std::tuple{m.x, m.y, m.z}; });
-  return result;
+  trace("plain scan");
+  return plain_scan(bounds, blocks, version, nx * ny * nz);
 }
 
 bool shared_search_enabled(Version) {
-  return false;
+  return cpu_bitplanes::enabled();
 }
 
 SharedSearchResult run_shared_search(const SearchBounds& bounds,
                                      std::span<const std::vector<BlockInfo>> directions, Version version) {
-  return search_each_direction(bounds, directions, version);
+  // Directions that can use bitplanes share one field. The rest run alone.
+  std::vector<std::size_t> shared_indices;
+  std::vector<std::vector<BlockInfo>> shared_blocks;
+  if (shared_search_enabled(version)) {
+    for (std::size_t i{0}; i < directions.size(); ++i) {
+      if (!directions[i].empty() && bitplanes::eligible(directions[i])) {
+        shared_indices.push_back(i);
+        shared_blocks.push_back(directions[i]);
+      }
+    }
+  }
+
+  SharedSearchResult result;
+  result.directions.resize(directions.size());
+  std::vector<bool> done(directions.size(), false);
+  if (shared_blocks.size() > 1) {
+    if (auto output{cpu_bitplanes::search(bounds, shared_blocks, version)}) {
+      result.kernel_seconds += output->seconds;
+      if (cpu_bitplanes::trace_enabled())
+        std::fprintf(stderr, "CPU search: bitplanes shared (%zu directions)\n", output->directions.size());
+      for (std::size_t i{0}; i < shared_indices.size(); ++i) {
+        result.directions[shared_indices[i]] = std::move(output->directions[i]);
+        done[shared_indices[i]] = true;
+      }
+    }
+  }
+  for (std::size_t i{0}; i < directions.size(); ++i) {
+    if (done[i])
+      continue;
+    result.directions[i] = run_search(bounds, directions[i], version);
+    result.kernel_seconds += result.directions[i].kernel_seconds;
+  }
+  return result;
 }

@@ -41,6 +41,8 @@ COMMON_HEADERS = $(wildcard src/search/*.hpp src/texture/*.hpp src/bitplanes/*.h
 BITPLANE_SRC = src/bitplanes/plan.cpp
 CUDA_SRC = src/backends/cuda/search.cu src/backends/cuda/bitplane_search.cu $(BITPLANE_SRC)
 CUDA_HEADERS = $(wildcard src/backends/cuda/*.cuh src/backends/cuda/*.hpp)
+CPU_SRC = src/backends/cpu/search.cpp src/backends/cpu/bitplane_search.cpp $(BITPLANE_SRC)
+CPU_HEADERS = $(wildcard src/backends/cpu/*.hpp)
 
 CCBIN = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.42.34433\bin\Hostx64\x64\cl.exe"
 
@@ -62,9 +64,9 @@ build/main: $(COMMON_SRC) src/backends/metal/search.mm build/tf_shader_src.h $(C
 	$(CXX) $(CXXFLAGS) -Ibuild -fobjc-arc $(COMMON_SRC) src/backends/metal/search.mm \
 	    -framework Metal -framework Foundation -o $@
 else
-build/main: $(COMMON_SRC) src/backends/cpu/search.cpp $(COMMON_HEADERS) $(BACKEND_STAMP)
+build/main: $(COMMON_SRC) $(CPU_SRC) $(COMMON_HEADERS) $(CPU_HEADERS) $(BACKEND_STAMP)
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) $(COMMON_SRC) src/backends/cpu/search.cpp -pthread -o $@
+	$(CXX) $(CXXFLAGS) $(COMMON_SRC) $(CPU_SRC) -pthread -o $@
 endif
 
 # The Metal shader source is texture_rules.hpp + match.metal wrapped into one C++
