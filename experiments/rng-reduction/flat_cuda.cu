@@ -260,6 +260,15 @@ public:
   }
 
   void reset_results() { total_matches_.zero(); }
+
+  // Zero keeps one row per thread, as production runs. Needs precomputed checks and Search mode.
+  void set_rows_per_thread(int rows) { rows_per_thread_ = rows; }
+
+  // The launch order and survivor check of match_words_variant. Same requirements.
+  void set_variant(bool z_major, bool pooled_verify) {
+    z_major_ = z_major;
+    pooled_verify_ = pooled_verify;
+  }
   const Planes* field() const { return planes_.get(); }
 
   // The production slab at this z offset, cut to the harness's own slab height.
@@ -295,6 +304,28 @@ public:
                            slab_checks_);
       plane_checks_.upload(slab_checks_);
     }
+    const bool variant = z_major_ || pooled_verify_;
+    if ((rows_per_thread_ || variant) && (!precompute_ || mode != MatchMode::Search || masks))
+      throw std::logic_error("Match variants only run the precomputed search");
+    if (variant)
+      return time_kernel([&] {
+        if (z_major_ && pooled_verify_)
+          launch_variant<true, true>(slab, match_grid, field);
+        else if (z_major_)
+          launch_variant<true, false>(slab, match_grid, field);
+        else
+          launch_variant<false, true>(slab, match_grid, field);
+      });
+    if (rows_per_thread_) {
+      const size_t rows = product(slab.ny, slab.nz);
+      const size_t chunks = rows / rows_per_thread_ + (rows % rows_per_thread_ != 0);
+      const unsigned int grid = grid_size(product(chunks, segments_));
+      return time_kernel([&] {
+        match_word_columns<<<grid, THREADS>>>(slab, rows_per_thread_, plane_checks_.get(), offsets_.get(),
+                                              field, verify_.get(), verify_offsets_.get(), matches_.get(),
+                                              total_matches_.get(), capacity_);
+      });
+    }
     return time_kernel([&] {
       if (world_y_)
         launch_match<true>(mode, slab, match_grid, field, masks);
@@ -326,6 +357,13 @@ public:
   int slab_count() const { return ceil_div(layout_.nz, slab_rows_); }
 
 private:
+  template <bool ZMajor, bool Pooled>
+  void launch_variant(const Layout& slab, unsigned int grid, const Planes* field) {
+    match_words_variant<ZMajor, Pooled><<<grid, THREADS>>>(slab, plane_checks_.get(), offsets_.get(), field,
+                                                           verify_.get(), verify_offsets_.get(),
+                                                           matches_.get(), total_matches_.get(), capacity_);
+  }
+
   template <bool WorldY>
   void launch_match(MatchMode mode, Layout slab, unsigned int grid, const Planes* field, Word* masks) {
     const auto launch = [&](auto tag) {
@@ -366,6 +404,8 @@ private:
   Layout layout_;
   SearchPlan plan_;
   int slab_rows_;
+  int rows_per_thread_ = 0;
+  bool z_major_ = false, pooled_verify_ = false;
   bool world_y_, precompute_;
   size_t field_words_per_z_, field_capacity_;
   int segments_;
@@ -1144,6 +1184,125 @@ void compare_packing_search(const SearchBounds& bounds, const std::vector<BlockI
   std::puts("PASS packing search exact standard-kernel match in every run");
 }
 
+// The standard kernel's result for blocks listed tops first.
+SearchResult standard_result(const SearchBounds& bounds, const std::vector<BlockInfo>& blocks) {
+  const auto side =
+      std::find_if(blocks.begin(), blocks.end(), [](const BlockInfo& block) { return block.is_side; });
+  float ms = 0;
+  return baseline_search(bounds, {blocks.begin(), side}, {side, blocks.end()}, ms);
+}
+
+// A small volume for the match variants, with a mixed formation that matches
+// at one known origin and a single block that a quarter of all candidates match.
+const SearchBounds SMALL_BOUNDS{-70, 60, -2, 1, -7, 4};
+const std::vector<BlockInfo> SINGLE_BLOCK{{0, 0, 0, 0, false}};
+
+std::vector<BlockInfo> small_formation() {
+  std::vector<BlockInfo> blocks{
+      {-77, -1, -3, 0, false}, {18, 2, 67, 0, false}, {2, 0, 4, 0, false}, {66, 1, -1, 0, true}};
+  for (auto& block : blocks)
+    block.rotation =
+        get_texture_modern(1 + block.x, block.y, -2 + block.z, block.is_side ? MOD_SIDE : MOD_TOP_BOTTOM);
+  return blocks;
+}
+
+// Times the production search against threads that each walk several rows.
+void compare_word_columns(const SearchBounds& bounds, const std::vector<BlockInfo>& formation, int slab_rows) {
+  const auto search = standard_result;
+
+  // Slabs of 5 rows, chunks that straddle slab rows and y levels, and a dense
+  // single block so every candidate's verdict is compared.
+  const auto& small = SMALL_BOUNDS;
+  const auto synthetic = small_formation();
+  const auto& single = SINGLE_BLOCK;
+  for (const auto* blocks : std::array<const std::vector<BlockInfo>*, 2>{&synthetic, &single}) {
+    const Experiment experiment(small, *blocks, true);
+    const auto expected = search(small, *blocks);
+    if (expected.total == 0)
+      throw std::runtime_error("Synthetic column case has no match to find");
+    for (int rows : {1, 2, 3, 5, 7, 19, 1000}) {
+      Sample sample{};
+      DeviceExperiment device(experiment, 5, false, MAX_MATCHES, true);
+      device.set_rows_per_thread(rows);
+      compare_results(device.run(sample, nullptr, MatchMode::Search, true), expected, experiment);
+    }
+  }
+  std::puts("PASS word columns exact matches on synthetic slabs");
+
+  constexpr std::array rows_per_thread{0, 1, 5, 25, 125, 625, 4096};
+  const Experiment experiment(bounds, formation, true);
+  const auto expected = search(bounds, formation);
+  DeviceExperiment device(experiment, slab_rows, false, MAX_MATCHES, true);
+  const auto run = [&](int rows) {
+    Sample sample{};
+    device.set_rows_per_thread(rows);
+    compare_results(device.run(sample, nullptr, MatchMode::Search, true), expected, experiment);
+    return sample;
+  };
+  for (int rows : rows_per_thread)
+    run(rows);
+  for (int i = 0; i < SAMPLES; ++i)
+    for (size_t offset = 0; offset < rows_per_thread.size(); ++offset) {
+      const int rows = rows_per_thread[(i + offset) % rows_per_thread.size()];
+      const auto sample = run(rows);
+      std::printf("COLUMNS %d rows=%d fill_ms=%.6f match_ms=%.6f\n", i + 1, rows, sample.fill,
+                  sample.match_and_verify);
+    }
+  std::puts("PASS word columns exact standard-kernel match in every run");
+}
+
+// Times the production match against a z-major launch order and a pooled
+// survivor check, alone and together.
+void compare_match_variants(const SearchBounds& bounds, const std::vector<BlockInfo>& formation,
+                            int slab_rows) {
+  struct Variant {
+    const char* name;
+    bool z_major, pooled;
+  };
+  constexpr std::array<Variant, 4> variants{
+      {{"production", false, false}, {"z-major", true, false}, {"pooled", false, true}, {"both", true, true}}};
+
+  // The wide case fills whole blocks with about 4,096 survivors each, so most
+  // of them overflow the pool and take the inline path.
+  const SearchBounds wide{-9000, 9000, 0, 0, -3, 3};
+  const auto synthetic = small_formation();
+  const std::array<std::pair<SearchBounds, const std::vector<BlockInfo>*>, 3> cases{
+      {{SMALL_BOUNDS, &synthetic}, {SMALL_BOUNDS, &SINGLE_BLOCK}, {wide, &SINGLE_BLOCK}}};
+  for (const auto& [volume, blocks] : cases) {
+    const Experiment experiment(volume, *blocks, true);
+    const auto expected = standard_result(volume, *blocks);
+    if (expected.total == 0 || expected.total > MAX_MATCHES)
+      throw std::runtime_error("Synthetic variant case must have a match set that fits the buffer");
+    for (const auto& variant : variants) {
+      Sample sample{};
+      DeviceExperiment device(experiment, 5, false, MAX_MATCHES, true);
+      device.set_variant(variant.z_major, variant.pooled);
+      compare_results(device.run(sample, nullptr, MatchMode::Search, true), expected, experiment);
+    }
+  }
+  std::puts("PASS match variants exact matches on synthetic slabs, with and without pool overflow");
+
+  const Experiment experiment(bounds, formation, true);
+  const auto expected = standard_result(bounds, formation);
+  DeviceExperiment device(experiment, slab_rows, false, MAX_MATCHES, true);
+  const auto run = [&](const Variant& variant) {
+    Sample sample{};
+    device.set_variant(variant.z_major, variant.pooled);
+    compare_results(device.run(sample, nullptr, MatchMode::Search, true), expected, experiment);
+    return sample;
+  };
+  for (const auto& variant : variants)
+    run(variant);
+  for (int i = 0; i < SAMPLES; ++i)
+    for (size_t offset = 0; offset < variants.size(); ++offset) {
+      const auto& variant = variants[(i + offset) % variants.size()];
+      const auto sample = run(variant);
+      std::printf("VARIANT %d %s fill_ms=%.6f match_ms=%.6f\n", i + 1, variant.name, sample.fill,
+                  sample.match_and_verify);
+    }
+  std::puts("PASS match variants exact standard-kernel match in every run");
+}
+
 int parse_int(std::string_view value) {
   int result = 0;
   const auto parsed = std::from_chars(value.data(), value.data() + value.size(), result);
@@ -1187,6 +1346,14 @@ int main(int argc, char** argv) {
     }
     if (std::getenv("TF_FLAT_COMPARE_PACKING_SEARCH")) {
       compare_packing_search(bounds, formation, slab_rows);
+      return 0;
+    }
+    if (std::getenv("TF_FLAT_WORD_COLUMNS")) {
+      compare_word_columns(bounds, formation, slab_rows);
+      return 0;
+    }
+    if (std::getenv("TF_FLAT_MATCH_VARIANTS")) {
+      compare_match_variants(bounds, formation, slab_rows);
       return 0;
     }
     if (std::getenv("TF_FLAT_FUSED")) {

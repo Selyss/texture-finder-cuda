@@ -7,7 +7,10 @@
 #   sbatch --account=<account> --gpus=1 --cpus-per-task=8 --mem=16G --time=00:20:00 test/validate_cuda.sh
 #   test/validate_cuda.sh
 # ARCH selects the nvcc target (default native). PAIRS sets timed pairs (default 5).
-# HARNESS_MODES=1 also runs every experiment mode of the harness (several minutes).
+# HARNESS_MODES=all also runs every experiment mode of the harness (several
+# minutes); a list such as HARNESS_MODES="FUSED WORD_COLUMNS" runs only those.
+# PLANE_BYTES=a:b:c also times the bitplane path under those field budgets,
+# which set the slab height.
 # TF_MODULES lists environment modules to load first. A SOURCE_COMMIT file, if
 # present, identifies a tree that was copied without its .git directory.
 # Exit status is non-zero if any gate fails. Timings are printed, never judged.
@@ -112,17 +115,36 @@ for dir in 0 all; do
     done
 done
 
+if [ -n "${PLANE_BYTES:-}" ]; then
+    echo "== Field budget sweep (kernel seconds, $PAIRS runs each)"
+    echo "workload,plane_bytes,run,bitplanes_s"
+    for dir in 0 all; do
+        [ "$dir" = all ] && want="$EXPECT facing North" || want=$EXPECT
+        for budget in ${PLANE_BYTES//:/ }; do
+            out=$(export TF_CUDA_BITPLANES_BYTES=$budget; run 1 "$dir")
+            gate "budget $budget, direction $dir: bitplanes find the match" \
+                [ "$(matches "$out")" = "$want" -a -z "$(grep 'baseline fallback' <<<"$out")" ]
+        done
+        for pair in $(seq 1 "$PAIRS"); do
+            for budget in ${PLANE_BYTES//:/ }; do
+                echo "$dir,$budget,$pair,$(export TF_CUDA_BITPLANES_BYTES=$budget; kernel "$(run 1 "$dir")")"
+            done
+        done
+    done
+fi
+
 echo "== Standalone harness on the reference"
 if [ -x build/flat_cuda ]; then
     harness=(build/flat_cuda test/fixtures/formation_a.txt "${REF[@]:0:6}" "${SLURM_CPUS_PER_TASK:-4}")
     gate "harness default run" "${harness[@]}"
-    if [ -n "${HARNESS_MODES:-}" ]; then
-        # Each mode checks itself against the CPU reference or the standard kernel.
-        for mode in DUPLICATE_Y COMPARE_OFFSETS COMPARE_PACKING COMPARE_PACKING_SEARCH SHARED_FIELD FUSED; do
-            gate "harness $mode" env "TF_FLAT_$mode=1" "${harness[@]}"
-        done
-        gate "harness DIAGNOSTICS" env TF_FLAT_DIAGNOSTICS=all "${harness[@]}"
+    modes=${HARNESS_MODES:-}
+    if [ "$modes" = all ]; then
+        modes="DUPLICATE_Y COMPARE_OFFSETS COMPARE_PACKING COMPARE_PACKING_SEARCH SHARED_FIELD FUSED WORD_COLUMNS MATCH_VARIANTS DIAGNOSTICS"
     fi
+    # Each mode checks itself against the CPU reference or the standard kernel.
+    for mode in $modes; do
+        gate "harness $mode" env "TF_FLAT_$mode=all" "${harness[@]}"
+    done
 fi
 
 echo "== Result: $fails gate(s) failed"
