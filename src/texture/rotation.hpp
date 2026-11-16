@@ -11,14 +11,13 @@
 // expected value flips each quarter turn. Keeping a side's value in {0, 1} is
 // essential: the kernel compares it against a mod-2 texture value, and a
 // value of 2 or 3 could never match anything.
-inline void rotateFormation(BlockInfo &block)
-{
-    int temp = block.x;
-    block.x = -block.z;
-    block.z = temp;
+inline void rotate_formation(BlockInfo& block) {
+  int temp = block.x;
+  block.x = -block.z;
+  block.z = temp;
 
-    if (block.isSide)
-        block.rotation = (block.rotation + 1) & 1;
-    else
-        block.rotation = (block.rotation + 1) & 3;
+  if (block.is_side)
+    block.rotation = (block.rotation + 1) & 1;
+  else
+    block.rotation = (block.rotation + 1) & 3;
 }

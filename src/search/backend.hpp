@@ -9,16 +9,14 @@
 // must be behaviorally identical; test/e2e.sh validates whichever backend
 // the current binary carries.
 
-struct SearchBounds
-{
-    int x_min, x_max;
-    int y_min, y_max;
-    int z_min, z_max;
+struct SearchBounds {
+  int x_min, x_max;
+  int y_min, y_max;
+  int z_min, z_max;
 };
 
-struct MatchResult
-{
-    int x, y, z;
+struct MatchResult {
+  int x, y, z;
 };
 
 // If a search legitimately produces more matches than this, the formation is
@@ -27,32 +25,28 @@ struct MatchResult
 constexpr unsigned int MAX_MATCHES = 1u << 20;
 
 // Human-readable name of the linked backend ("CUDA", "Metal", "CPU").
-const char *searchBackendName();
+const char* search_backend_name();
 
-struct SearchFormation
-{
-    std::vector<BlockInfo> tops, sides;
+struct SearchFormation {
+  std::vector<BlockInfo> tops, sides;
 };
 
-struct DirectionResult
-{
-    std::vector<MatchResult> matches;
-    unsigned long long total = 0;
-    bool truncated = false;
-    float kernelMs = 0.0f; // Set for an independently timed search.
+struct DirectionResult {
+  std::vector<MatchResult> matches;
+  unsigned long long total = 0;
+  bool truncated = false;
+  float kernel_ms = 0.0f; // Set for an independently timed search.
 };
 
-struct SharedSearchResult
-{
-    std::vector<DirectionResult> directions;
-    double kernelSeconds = 0.0;
+struct SharedSearchResult {
+  std::vector<DirectionResult> directions;
+  double kernel_seconds = 0.0;
 };
 
 // Searches inclusive bounds. The total includes matches beyond the output cap.
-DirectionResult runSearch(const SearchBounds &bounds,
-                          const std::vector<BlockInfo> &topsAndBottoms,
-                          const std::vector<BlockInfo> &sides, int version);
+DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockInfo>& tops_and_bottoms,
+                           const std::vector<BlockInfo>& sides, int version);
 
-bool sharedSearchEnabled(int version);
-SharedSearchResult runSharedSearch(const SearchBounds &bounds,
-                                   const std::vector<SearchFormation> &formations, int version);
+bool shared_search_enabled(int version);
+SharedSearchResult run_shared_search(const SearchBounds& bounds,
+                                     const std::vector<SearchFormation>& formations, int version);

@@ -63,7 +63,7 @@ and `TextureFinder` compares against `getTexture(x, y, z, 2)`).
 ## Formation direction
 
 The reference tool has no direction feature; it is this project's addition.
-Convention: `rotateFormation` turns the formation a quarter turn,
+Convention: `rotate_formation` turns the formation a quarter turn,
 `(x, z) -> (-z, x)` (east -> south viewed from above), and advances the
 expected values one variant step: tops `+1 mod 4`, sides flip parity
 (`+1 mod 2`) — a side value must stay in {0, 1} or it could never match a
@@ -126,10 +126,10 @@ value = Math.abs(rand) % mod;   // no LCG scramble in this era
 ```
 Note the contrast with 1.13+: there the 64-bit mix is shifted (`mix >> 16`)
 and *then* consumed; here it is truncated to 32 bits first. This is why
-`texture_rules.hpp` exposes `coordMix` separately from `coordRandom`.
+`texture_rules.hpp` exposes `coord_mix` separately from `coord_random`.
 
 **Sodium 1.0-4.1 on MC 1.16-1.18.2 (`version = 3`, reference `SodiumTextures`):**
-murmur-style avalanche of `coordRandom` (xor-shift-33 / multiply twice),
+murmur-style avalanche of `coord_random` (xor-shift-33 / multiply twice),
 then `rand = (int)(mix13(seed += PHI) + mix13(seed + PHI))`,
 `Math.abs(rand) % mod`. PHI = 0x9E3779B97F4A7C15.
 
