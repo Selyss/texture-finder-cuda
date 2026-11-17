@@ -58,13 +58,18 @@ check "fixture at max corner" "Match found at [-108723, -54, -69736]" "$out"
 #    with ~40% side faces. The searcher must recover the origin. A random
 #    formation now and then matches at a second place in the volume, so the
 #    full match list is compared with the independent CPU implementation
-#    instead of requiring exactly one match.
+#    instead of requiring exactly one match. The formations are the same on
+#    every platform, and enough of them filter well enough for bitplanes
+#    that the suite fails if that path stops being taken.
 CPU=build/cpu_search
+bitplane_cases=0
 check_synthetic() { # <label> <expected-line> <args...>
     local label=$1 expected=$2; shift 2
     local g c
-    g=$("$BIN" "$@" 2>/dev/null | grep "^Match found" | sort) || true
+    g=$(TF_CUDA_BITPLANES_TRACE=1 TF_METAL_BITPLANES_TRACE=1 TF_CPU_BITPLANES_TRACE=1 \
+        "$BIN" "$@" 2>"$TMP/trace.txt" | grep "^Match found" | sort) || true
     c=$("$CPU" "$@" 2>/dev/null | grep "^Match found" | sort) || true
+    if grep -q "search: bitplanes" "$TMP/trace.txt"; then bitplane_cases=$((bitplane_cases + 1)); fi
     if ! grep -qxF "$expected" <<<"$g"; then
         echo "FAIL: $label — missing: $expected"
         fails=$((fails + 1))
@@ -97,6 +102,17 @@ for version in 0 1 2 3 4; do
         seed=$((seed + 1))
     done
 done
+
+# With bitplanes left on, the round-trips above must have used them.
+MIN_BITPLANE_CASES=20
+if [ "${TF_CUDA_BITPLANES:-1}${TF_METAL_BITPLANES:-1}${TF_CPU_BITPLANES:-1}" = 111 ]; then
+    if [ "$bitplane_cases" -ge "$MIN_BITPLANE_CASES" ]; then
+        echo "PASS: $bitplane_cases of 40 synthetic searches used bitplanes"
+    else
+        echo "FAIL: only $bitplane_cases of 40 synthetic searches used bitplanes (want $MIN_BITPLANE_CASES)"
+        fails=$((fails + 1))
+    fi
+fi
 
 # 5. GPU vs CPU differential: on small volumes the GPU must produce exactly
 #    the same match set as the independent CPU implementation — including

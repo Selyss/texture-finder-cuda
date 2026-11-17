@@ -119,8 +119,8 @@ done
 echo "== Older versions (a planted formation in the reference volume; kernel seconds)"
 echo "version,standard_s,bitplanes_s"
 form=$(mktemp)
-# gen_formation's shapes depend on the C++ library, so the seed is found here:
-# the first whose formation filters well enough for bitplanes.
+# Not every generated formation filters well enough for bitplanes, so the
+# seed is found here: the first whose formation does.
 seed=
 for try in $(seq 1 40); do
     build/gen_formation 0 0 -120000 -50 -50000 24 40 "$try" > "$form"

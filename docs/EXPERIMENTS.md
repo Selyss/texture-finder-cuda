@@ -2418,3 +2418,16 @@ not comparable with the row above):
 Each version was gated on taking the bitplane path, finding the planted
 origin and returning the standard kernel's match list. Version 4 (sodium19)
 is covered by the e2e suite but was not timed.
+
+### Portable test formations and a bitplane coverage check in e2e (M4, local, 2026-11-16)
+
+`gen_formation` drew its offsets with `std::uniform_int_distribution`, whose
+output differs between C++ libraries, so one seed made different formations
+on macOS and Linux (the cause of the failed gates in job `9546178`). It now
+takes the range from `std::mt19937` by hand, which is the same everywhere.
+
+`test/e2e.sh` now counts the synthetic round-trips that took the bitplane
+path and, with bitplanes left on, fails below 20 of 40. With the portable
+formations the count is 23 on both the Metal and the CPU build, covering
+every version (5, 1, 8, 4 and 5 searches for versions 0 to 4). The suite
+passes on both builds with bitplanes on and off. Not run on CUDA.

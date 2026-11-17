@@ -39,21 +39,28 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
+  // std::mt19937 gives the same numbers everywhere, but the standard
+  // distributions do not, so the range is taken by hand. A seed then makes
+  // the same formation on every platform.
   std::mt19937 rng(seed);
-  std::uniform_int_distribution<int> dxz(-8, 8), dy(-2, 3), pct(0, 99);
+  const auto draw = [&rng](int low, int high) {
+    return low + static_cast<int>(rng() % static_cast<unsigned>(high - low + 1));
+  };
 
   // Ground truth in the world frame: real texture values at origin+offset.
   std::set<std::tuple<int, int, int>> used;
   std::vector<BlockInfo> truth;
   while ((int)truth.size() < count) {
-    int bx = dxz(rng), by = dy(rng), bz = dxz(rng);
+    const int bx = draw(-8, 8);
+    const int by = draw(-2, 3);
+    const int bz = draw(-8, 8);
     if (!used.insert({bx, by, bz}).second)
       continue;
     BlockInfo b;
     b.x = bx;
     b.y = by;
     b.z = bz;
-    b.is_side = pct(rng) < side_percent;
+    b.is_side = draw(0, 99) < side_percent;
     const int mod = b.is_side ? MOD_SIDE : MOD_TOP_BOTTOM;
     b.rotation = get_texture_for_version(static_cast<Version>(version), ox + bx, oy + by, oz + bz, mod);
     truth.push_back(b);
