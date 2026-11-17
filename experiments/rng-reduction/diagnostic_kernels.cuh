@@ -67,12 +67,11 @@ __device__ inline Word synthetic_word(size_t index, unsigned int salt) {
 // Precomputed checks run the production filter. Unprecomputed checks keep the
 // earlier form, which locates each field word inside the kernel.
 template <MatchMode Mode, bool WorldY, bool Precomputed = false>
-__global__ void match_words_probe(Layout layout,
-                                  const std::conditional_t<Precomputed, PlaneCheck, Check>* checks,
-                                  const int* coset_offsets, const Planes* planes, unsigned int* block_counts,
-                                  Word* masks, int mask_z_rows, const VerifyCheck* verify,
-                                  const int* verify_offsets, MatchResult* matches, Word* total_matches,
-                                  Word capacity) {
+__global__ void
+match_words_probe(Layout layout, const std::conditional_t<Precomputed, PlaneCheck, Check>* checks,
+                  const int* coset_offsets, const Planes* planes, unsigned int* block_counts, Word* masks,
+                  int mask_z_rows, const VerifyCheck* verify, const int* verify_offsets, MatchResult* matches,
+                  Word* total_matches, Word capacity) {
   const int segments = ceil_div(layout.candidate_words, THREADS);
   using Row = std::conditional_t<Mode == MatchMode::Div32, unsigned int, size_t>;
   const Row row = blockIdx.x / segments;
@@ -118,7 +117,8 @@ __global__ void match_words_probe(Layout layout,
   }
 
   if constexpr (Mode == MatchMode::Full || Mode == MatchMode::Search)
-    verify_survivors(layout, mask, y, z_row, word, verify, verify_offsets, matches, total_matches, capacity);
+    verify_survivors<Version::modern>(layout, mask, y, z_row, word, verify, verify_offsets, matches,
+                                      total_matches, capacity);
 
   if constexpr (Mode == MatchMode::NoTail) {
     // Keep every thread's filter work live without storing masks during timing.
@@ -157,7 +157,8 @@ static __global__ void match_word_columns(Layout layout, int rows_per_thread, co
   size_t z_row = row % layout.nz;
   for (; row < end; ++row) {
     const Word mask = filter_word(layout, checks, coset_offsets, planes, y, z_row, word);
-    verify_survivors(layout, mask, y, z_row, word, verify, verify_offsets, matches, total_matches, capacity);
+    verify_survivors<Version::modern>(layout, mask, y, z_row, word, verify, verify_offsets, matches,
+                                      total_matches, capacity);
     if (++z_row == static_cast<size_t>(layout.nz)) {
       z_row = 0;
       ++y;
@@ -204,23 +205,24 @@ __global__ void match_words_variant(Layout layout, const PlaneCheck* checks, con
       if (slot < VERIFY_POOL)
         pool[slot] = static_cast<unsigned short>(threadIdx.x << 6 | bit);
       else
-        verify_survivors(layout, Word{1} << bit, y, z_row, word, verify, verify_offsets, matches,
-                         total_matches, capacity);
+        verify_survivors<Version::modern>(layout, Word{1} << bit, y, z_row, word, verify, verify_offsets,
+                                          matches, total_matches, capacity);
     }
     __syncthreads();
 
     const unsigned int count = pooled < VERIFY_POOL ? pooled : VERIFY_POOL;
     for (unsigned int i = threadIdx.x; i < count; i += THREADS) {
       const unsigned int entry = pool[i];
-      verify_survivors(layout, Word{1} << (entry & 63u), y, z_row,
-                       first_word + static_cast<int>(entry >> 6), verify, verify_offsets, matches,
-                       total_matches, capacity);
+      verify_survivors<Version::modern>(layout, Word{1} << (entry & 63u), y, z_row,
+                                        first_word + static_cast<int>(entry >> 6), verify, verify_offsets,
+                                        matches, total_matches, capacity);
     }
   } else {
     if (word >= layout.candidate_words)
       return;
     const Word mask = filter_word(layout, checks, coset_offsets, planes, y, z_row, word);
-    verify_survivors(layout, mask, y, z_row, word, verify, verify_offsets, matches, total_matches, capacity);
+    verify_survivors<Version::modern>(layout, mask, y, z_row, word, verify, verify_offsets, matches,
+                                      total_matches, capacity);
   }
 }
 

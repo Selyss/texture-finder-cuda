@@ -55,6 +55,33 @@ struct DirectionBuffers {
   cuda::MatchBuffer matches;
 };
 
+// The two kernels compiled for one version.
+struct Kernels {
+  decltype(&fill_planes<Version::modern>) fill;
+  decltype(&match_words<Version::modern>) match;
+};
+
+template <Version VERSION>
+[[nodiscard]] Kernels kernels() {
+  return {fill_planes<VERSION>, match_words<VERSION>};
+}
+
+[[nodiscard]] Kernels kernels_for(Version version) {
+  switch (version) {
+  case Version::legacy:
+    return kernels<Version::legacy>();
+  case Version::vanilla12:
+    return kernels<Version::vanilla12>();
+  case Version::sodium:
+    return kernels<Version::sodium>();
+  case Version::sodium19:
+    return kernels<Version::sodium19>();
+  case Version::modern:
+    break;
+  }
+  return kernels<Version::modern>();
+}
+
 } // namespace
 
 bool enabled() {
@@ -67,7 +94,7 @@ bool trace_enabled() {
 }
 
 std::optional<SearchOutput> search(const SearchBounds& bounds,
-                                   std::span<const std::vector<BlockInfo>> formations) {
+                                   std::span<const std::vector<BlockInfo>> formations, Version version) {
   const auto plan{plan_search(bounds, formations, available_plane_bytes(formations.size()))};
   if (!plan)
     return std::nullopt;
@@ -82,13 +109,16 @@ std::optional<SearchOutput> search(const SearchBounds& bounds,
     buffers.emplace_back(direction);
 
   // Copies and kernels are ordered on the default stream.
+  const auto kernel{kernels_for(version)};
+  const auto fill{kernel.fill};
+  const auto match{kernel.match};
   cuda::Timer timer;
   const auto nz{static_cast<std::int64_t>(bounds.nz())};
   for (std::int64_t z_offset{0}; z_offset < nz;) {
     const auto slab{plan->slab(z_offset)};
     if (slab.field_words > 0) {
-      fill_planes<<<(slab.field_words + THREADS - 1) / THREADS, THREADS>>>(
-          slab.layout, plane_y.get(), slab.field_words, planes->get());
+      fill<<<(slab.field_words + THREADS - 1) / THREADS, THREADS>>>(slab.layout, plane_y.get(),
+                                                                    slab.field_words, planes->get());
       cuda::check(cudaGetLastError());
     }
     for (std::size_t i{0}; i < buffers.size(); ++i) {
@@ -96,9 +126,9 @@ std::optional<SearchOutput> search(const SearchBounds& bounds,
       auto& buffer{buffers[i]};
       prepare_plane_checks(slab.layout, direction.checks, direction.offsets.data(), buffer.slab_checks);
       buffer.checks.upload(buffer.slab_checks);
-      match_words<<<slab.match_blocks, THREADS>>>(
-          slab.layout, buffer.checks.get(), buffer.offsets.get(), planes->get(), buffer.verify.get(),
-          buffer.verify_offsets.get(), buffer.matches.matches(), buffer.matches.count(), MAX_MATCHES);
+      match<<<slab.match_blocks, THREADS>>>(slab.layout, buffer.checks.get(), buffer.offsets.get(),
+                                            planes->get(), buffer.verify.get(), buffer.verify_offsets.get(),
+                                            buffer.matches.matches(), buffer.matches.count(), MAX_MATCHES);
       cuda::check(cudaGetLastError());
     }
     z_offset += slab.layout.nz;

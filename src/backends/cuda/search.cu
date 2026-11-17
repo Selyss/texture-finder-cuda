@@ -260,11 +260,11 @@ DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockIn
                                 " blocks"};
   const auto positions{checked_volume(bounds)};
 
-  // Modern searches use bitplanes when the formation filters well enough and
+  // Searches use bitplanes when the formation filters well enough and
   // the field fits in memory.
   if (shared_search_enabled(version)) {
     if (bitplanes::eligible(blocks)) {
-      if (auto output{cuda_bitplanes::search(bounds, std::span{&blocks, 1})}) {
+      if (auto output{cuda_bitplanes::search(bounds, std::span{&blocks, 1}, version)}) {
         trace("bitplanes");
         auto& result{output->directions.front()};
         result.kernel_seconds = output->kernel_seconds;
@@ -276,8 +276,8 @@ DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockIn
   return standard_search(bounds, blocks, version, positions);
 }
 
-bool shared_search_enabled(Version version) {
-  return version == Version::modern && cuda_bitplanes::enabled();
+bool shared_search_enabled(Version) {
+  return cuda_bitplanes::enabled();
 }
 
 SharedSearchResult run_shared_search(const SearchBounds& bounds,
@@ -285,7 +285,7 @@ SharedSearchResult run_shared_search(const SearchBounds& bounds,
   return bitplanes::search_sharing_field(
       bounds, directions, version,
       [&](std::span<const std::vector<BlockInfo>> shared) -> std::optional<SharedSearchResult> {
-        auto output{cuda_bitplanes::search(bounds, shared)};
+        auto output{cuda_bitplanes::search(bounds, shared, version)};
         if (!output)
           return std::nullopt;
         if (cuda_bitplanes::trace_enabled())

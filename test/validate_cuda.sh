@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Regression gate for the CUDA backend after a source change: clean build,
 # unit tests, the end-to-end suite with bitplanes off and on, forced fallback,
-# the standalone harness build, and a short reference timing.
+# the older versions on a planted formation, the standalone harness build, and
+# a short reference timing.
 #
 # Usage, from a GPU node or under Slurm:
 #   sbatch --account=<account> --gpus=1 --cpus-per-task=8 --mem=16G --time=00:20:00 test/validate_cuda.sh
@@ -114,6 +115,35 @@ for dir in 0 all; do
         echo "$dir,$pair,$s,$b"
     done
 done
+
+echo "== Older versions (a planted formation in the reference volume; kernel seconds)"
+echo "version,standard_s,bitplanes_s"
+form=$(mktemp)
+# gen_formation's shapes depend on the C++ library, so the seed is found here:
+# the first whose formation filters well enough for bitplanes.
+seed=
+for try in $(seq 1 40); do
+    build/gen_formation 0 0 -120000 -50 -50000 24 40 "$try" > "$form"
+    if env -u TF_CUDA_BITPLANES TF_CUDA_BITPLANES_TRACE=1 build/main -120100 -119900 -60 -45 -50050 -49950 0 \
+        "$form" 0 2>&1 | grep -q "CUDA search: bitplanes"; then
+        seed=$try
+        break
+    fi
+done
+gate "a generated formation qualifies for bitplanes" [ -n "$seed" ]
+for v in 0 1 2 3; do
+    build/gen_formation "$v" 0 -120000 -50 -50000 24 40 "${seed:-1}" > "$form"
+    old=("${REF[@]:0:6}" "$v" "$form" 0)
+    on() { env -u TF_CUDA_BITPLANES TF_CUDA_BITPLANES_TRACE=1 build/main "${old[@]}" 2>&1; }
+    off() { TF_CUDA_BITPLANES=0 build/main "${old[@]}" 2>&1; }
+    out=$(on)
+    std=$(off)
+    gate "version $v uses bitplanes" grep -q "CUDA search: bitplanes" <<<"$out"
+    gate "version $v finds the planted formation" grep -qF "Match found at [-120000, -50, -50000]" <<<"$out"
+    gate "version $v agrees with the standard kernel" [ "$(matches "$out")" = "$(matches "$std")" ]
+    echo "$v,$(kernel "$(off)"),$(kernel "$(on)")"
+done
+rm -f "$form"
 
 if [ -n "${PLANE_BYTES:-}" ]; then
     echo "== Field budget sweep (kernel seconds, $PAIRS runs each)"

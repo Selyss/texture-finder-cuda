@@ -281,7 +281,8 @@ public:
     if (fill_grid)
       return time_kernel([&] {
         if (pack32)
-          fill_planes<<<fill_grid, THREADS>>>(slab, y_offsets_.get(), field_count, planes_.get());
+          fill_planes<Version::modern><<<fill_grid, THREADS>>>(slab, y_offsets_.get(), field_count,
+                                                               planes_.get());
         else if (world_y_)
           fill_planes_plain<true><<<fill_grid, THREADS>>>(slab, y_offsets_.get(), field_count, planes_.get());
         else
@@ -469,7 +470,7 @@ SearchResult baseline_search(const SearchBounds& bounds, const std::vector<Block
 // The backend's own bitplane search, planned and launched as the CLI runs it.
 void expect_production(const SearchBounds& bounds, std::span<const std::vector<BlockInfo>> formations,
                        std::span<const SearchResult> expected) {
-  const auto output = cuda_bitplanes::search(bounds, formations);
+  const auto output = cuda_bitplanes::search(bounds, formations, Version::modern);
   if (!output)
     throw std::runtime_error("Production bitplane search did not fit in memory");
   for (size_t i = 0; i < formations.size(); ++i) {
