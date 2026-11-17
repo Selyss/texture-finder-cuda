@@ -100,12 +100,30 @@ private:
   }
 
   // Hashes every field word of the slab, in the order the filter indexes them.
+  // The loop is compiled once per version, so the hash has no branch on it.
   void fill(const Layout& layout, std::span<const int> plane_y) {
+    switch (job_.version) {
+    case Version::legacy:
+      return fill_as<Version::legacy>(layout, plane_y);
+    case Version::vanilla12:
+      return fill_as<Version::vanilla12>(layout, plane_y);
+    case Version::sodium:
+      return fill_as<Version::sodium>(layout, plane_y);
+    case Version::sodium19:
+      return fill_as<Version::sodium19>(layout, plane_y);
+    case Version::modern:
+      break;
+    }
+    fill_as<Version::modern>(layout, plane_y);
+  }
+
+  template <Version VERSION>
+  void fill_as(const Layout& layout, std::span<const int> plane_y) {
     auto* word_out{field_.data()};
     for (const int y : plane_y) {
       for (int z_index{0}; z_index < layout.hashed_rows; ++z_index)
         for (int word{0}; word < layout.field_words; ++word)
-          *word_out++ = field_word(job_.version, layout, y, z_index, word);
+          *word_out++ = field_word(VERSION, layout, y, z_index, word);
     }
   }
 

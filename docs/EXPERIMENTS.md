@@ -2336,3 +2336,85 @@ On the Metal build, 60 consecutive runs of the suite all passed. One of them
 hit the case: `synthetic v3 dir3 (all mode)` reported two matches, the same
 two as the CPU reference. A run of the suite took about 19 s, up from about
 6 s, because the CPU tool now searches each of the 40 round-trip volumes.
+
+### CPU fill per version, 32-bit field index, CUDA changes awaiting a GPU (M4, local, 2026-11-16)
+
+The machine was on battery for all of this, so absolute times are slower than
+the earlier mains-powered rows (about 5.3 s where 3.49 s was measured before).
+Only the paired comparisons below mean anything.
+
+**CPU fill compiled once per version.** `Worker::fill` took the version at
+run time, so every hash went through the version switch. Dispatching once per
+slab to a loop compiled for that version, reference workload, one direction,
+nine alternating pairs:
+
+| Build | Median kernel s | Range |
+|---|---:|---|
+| before | 5.294 | 5.267 - 5.346 |
+| fill per version | 4.924 | 4.904 - 5.028 |
+
+7.0% less, with no overlap between the two sets. The CPU e2e suite passes
+with bitplanes on and off.
+
+**Packing the hash bits without the shift chain: no gain.** Writing each
+rotation bit straight to its position (`low |= bit << i`) instead of the
+`low = (low >> 1) | (bit << 31)` chain measured 5.51 - 6.71 s against 5.06 -
+5.19 s for the build above in the same session. Not adopted. The fill is
+bounded by its 64-bit multiplies (three to four per hash), which is also why a
+NEON or AVX2 fill was not written: neither has a 64-bit vector multiply.
+
+**32-bit field index in `filter_word`.** The planner now caps the field below
+2^32 words and `filter_word` indexes it with 32-bit arithmetic. Metal,
+reference workload, one direction, alternating runs after warm-up: 0.81 - 0.85
+s against 0.83 - 0.95 s for the committed build, in line with the 4.4%
+measured earlier. Unit tests pass (790,564 assertions), a 60-formation Metal
+differential (120 runs, 20 multi-slab) had no mismatch, and the Metal e2e
+suite passes.
+
+**CUDA, not yet compiled or run.** The bitplane kernels are templated on the
+version and `shared_search_enabled` no longer requires modern, `match_words`
+runs z row by z row, and `test/validate_cuda.sh` gains an "Older versions"
+section: versions 0 to 3 on a planted formation in the reference volume, each
+gated on using bitplanes, finding the planted origin and agreeing with the
+standard kernel, with both kernel times printed. The same four formations
+were dry-run on Metal: all use bitplanes and agree with the plain kernel.
+
+### CUDA bitplanes for every version, z-major order, 32-bit field index (Narval A100, job 9549732)
+
+Node `ng10711`, CUDA 12.9, `sm_80`, every harness mode. All 44 gates passed.
+The 12 source hashes the job recorded equal the local tree.
+
+Job `9546178` ran first and failed five gates, both from mistakes in the
+change rather than in the search: one harness call still used the old
+`cuda_bitplanes::search` signature, and the planted formation for the
+older-version section qualified for bitplanes on macOS but not on Linux,
+because `gen_formation` draws its shape with `std::uniform_int_distribution`,
+which differs between C++ libraries. The script now tries seeds until one
+qualifies on the machine it runs on.
+
+Reference workload, kernel seconds, median of five alternating pairs:
+
+| Workload | Standard | Bitplanes | Bitplanes, job 9511085 |
+|---|---:|---:|---:|
+| one direction | 0.681668 | 0.123920 | 0.125269 |
+| all directions | 2.725060 | 0.328846 | 0.334495 |
+
+z-major order and the 32-bit index together are worth 1.1% and 1.7% here.
+The harness still measures its own two kernels 4.5% apart (70.84 ms against
+67.68 ms for the match), so most of that difference does not reach the CLI's
+kernel time.
+
+Older versions, one planted formation in the reference volume, one direction,
+one run each (the formation differs from the reference one, so version 0 is
+not comparable with the row above):
+
+| Version | Standard s | Bitplanes s | Ratio |
+|---|---:|---:|---:|
+| 0 modern | 0.681447 | 0.155005 | 4.4x |
+| 1 legacy | 0.671894 | 0.148785 | 4.5x |
+| 2 vanilla12 | 0.453555 | 0.097538 | 4.7x |
+| 3 sodium | 1.295000 | 0.300026 | 4.3x |
+
+Each version was gated on taking the bitplane path, finding the planted
+origin and returning the standard kernel's match list. Version 4 (sodium19)
+is covered by the e2e suite but was not timed.

@@ -332,3 +332,23 @@ the tables above has not run the bitplane search, so its 0.72 s stays the
 latest figure for that card. Against the earlier rows of this file, the
 Metal backend went from 7.49 s to 0.641 s and the CPU backend from 74.6 s to
 3.49 s on the same laptop.
+
+## CUDA bitplanes for the older versions (2026-11-16)
+
+The CUDA backend now uses the bitplane search for every version, as the Metal
+and CPU backends already did. Narval job `9549732`, A100-SXM4-40GB, kernel
+seconds, the reference volume in one direction with one planted formation per
+version, one run each. "Before" is the standard kernel of the same build.
+This formation is not the reference one, so the modern row is not comparable
+with the table above.
+
+| Version | Before | Bitplanes | Ratio |
+|---|---:|---:|---:|
+| 0 modern | 0.681447 s | 0.155005 s | 4.4× |
+| 1 legacy | 0.671894 s | 0.148785 s | 4.5× |
+| 2 vanilla12 | 0.453555 s | 0.097538 s | 4.7× |
+| 3 sodium | 1.295000 s | 0.300026 s | 4.3× |
+
+On the reference workload the same job measured 0.123920 s for one direction
+and 0.328846 s for all four (medians of five pairs), after the match kernel
+changed to z-major order and a 32-bit field index.
