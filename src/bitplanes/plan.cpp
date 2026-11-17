@@ -84,7 +84,9 @@ std::optional<SearchPlan> plan_search(const SearchBounds& bounds,
   const std::size_t field_words{static_cast<std::size_t>(ceil_div(static_cast<int>(width), WORD_BITS)) + 1};
   const auto candidate_words{ceil_div(static_cast<int>(nx), WORD_BITS)};
   const auto segments{ceil_div(candidate_words, THREADS)};
-  const auto words_budget{plane_bytes / sizeof(Planes)};
+  // filter_word indexes the field with 32 bits.
+  const auto words_budget{
+      std::min<std::size_t>(plane_bytes / sizeof(Planes), std::numeric_limits<std::uint32_t>::max())};
   if (static_cast<std::size_t>(ny) > words_budget / field_words)
     return std::nullopt;
 

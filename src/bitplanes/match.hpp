@@ -65,12 +65,16 @@ TF_NODISCARD TF_HOST_DEVICE TF_FORCE_INLINE Word filter_word(Layout layout,
   const int remaining = layout.nx - word * WORD_BITS;
   Word mask = low_mask(remaining < WORD_BITS ? remaining : WORD_BITS);
   // The coset anchor is within the slab's first STRIDE rows.
-  // This quotient is the number of strides since that anchor.
-  const size_t base = (y * layout.hashed_rows + z_row / STRIDE) * layout.field_words + word;
+  // This quotient is the number of strides since that anchor. The planner
+  // keeps the field under 2^32 words, so 32-bit indices reach all of it.
+  const uint32_t base = (static_cast<uint32_t>(y) * static_cast<uint32_t>(layout.hashed_rows) +
+                         static_cast<uint32_t>(z_row) / STRIDE) *
+                            static_cast<uint32_t>(layout.field_words) +
+                        static_cast<uint32_t>(word);
   const int coset = residue(layout.bounds.z_min + static_cast<int>(z_row));
   for (int i = coset_offsets[coset]; i < coset_offsets[coset + 1] && mask; ++i) {
     const PlaneCheck check = checks[i];
-    const size_t index = base + check.offset;
+    const uint32_t index = base + static_cast<uint32_t>(check.offset);
     Word low = planes[index].low >> check.shift;
     if (check.shift)
       low |= planes[index + 1].low << (WORD_BITS - check.shift);
