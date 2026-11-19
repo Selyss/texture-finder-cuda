@@ -147,20 +147,40 @@ main <x_min> <x_max> <y_min> <y_max> <z_min> <z_max> <version> <file> <direction
   rerunning the identical command resumes an interrupted search where it
   stopped (the state file is verified against the arguments and formation,
   and removed on completion)
+- `--quiet` (optional): print only the `Match found` lines, with no progress
+  line
+- `--json` (optional): print one JSON object instead of the text report,
+  with `status`, `backend`, `version`, `search`, `bounds`, `total_matches`,
+  `truncated`, `matches` (each with `x`, `y`, `z` and `facing`),
+  `kernel_seconds` and `seconds`
+- `--help`: show the usage
+
+The same search can be written with named options, in any order, and with
+the area given as a centre and a radius:
+
+```
+main <file> --version 1.21.4 --y -64 100 --center 0 0 --radius 10000
+main <file> --version 1.21.4 --y -64 100 --x -10000 10000 --z -10000 10000 --facing north
+```
+
+`--facing` takes `0`-`3`, a direction name, or `all`, and defaults to `all`.
+`--version` (and the positional `version`) takes the number from the table
+below, a Minecraft release such as `1.21.4` or `1.12.2`, or
+`sodium-<release>` such as `sodium-1.18.2` for the two Sodium rule sets.
 
 Large searches show a live progress line with ETA on stderr and print
 matches as they are found. If the formation is too weak to give a unique
 result in the requested volume, the program says how many blocks to add.
 
 Every backend uses the bitplane search by default. It reuses packed texture
-rotations to filter candidates before checking the surviving positions. CUDA
-uses it for version 0, and the Metal and CPU backends for every version.
-Searches with a weak filter, or on CUDA with too little available GPU memory,
-automatically use the plain search. `TF_CUDA_BITPLANES=0`,
+rotations to filter candidates before checking the surviving positions, for
+every version. Searches with a weak filter, or on CUDA with too little
+available GPU memory, automatically use the plain search. `TF_CUDA_BITPLANES=0`,
 `TF_METAL_BITPLANES=0` or `TF_CPU_BITPLANES=0` in the environment forces the
-plain search every time. Set `TF_CUDA_BITPLANES_TRACE=1`,
-`TF_METAL_BITPLANES_TRACE=1` or `TF_CPU_BITPLANES_TRACE=1` to see which path
-ran on stderr.
+plain search every time. The `Search:` line of the output says which one ran:
+`bitplanes`, `plain`, or `bitplanes for 2 of 4 directions` when only some
+orientations filter well enough. A search long enough to wait for also prints
+a rough `Estimated time:` once its speed is known.
 In `all` mode, eligible directions share the bitplanes for each search
 slice. Long searches stream matches in slice order, with the facing on each
 line. Existing checkpoints resume in their original order. New slice-first
@@ -175,6 +195,7 @@ $ ./build/main -10000 10000 -64 100 -10000 10000 0 formation.txt all
 Backend: CUDA
 Version: 1.21.2+
 Facing: trying all directions
+Search: bitplanes
 Match found at [4851, 63, -7204] facing West
 1 match
 Kernel time: 0.31 seconds

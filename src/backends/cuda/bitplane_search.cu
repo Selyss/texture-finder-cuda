@@ -9,6 +9,7 @@
 #include "backends/cuda/device.hpp"
 #include "backends/cuda/match_buffer.hpp"
 #include "bitplanes/plan.hpp"
+#include "texture/version_dispatch.hpp"
 
 namespace cuda_bitplanes {
 
@@ -61,40 +62,16 @@ struct Kernels {
   decltype(&match_words<Version::modern>) match;
 };
 
-template <Version VERSION>
-[[nodiscard]] Kernels kernels() {
-  return {fill_planes<VERSION>, match_words<VERSION>};
-}
-
 [[nodiscard]] Kernels kernels_for(Version version) {
-  switch (version) {
-  case Version::legacy:
-    return kernels<Version::legacy>();
-  case Version::vanilla12:
-    return kernels<Version::vanilla12>();
-  case Version::sodium:
-    return kernels<Version::sodium>();
-  case Version::sodium19:
-    return kernels<Version::sodium19>();
-  case Version::modern:
-    break;
-  }
-  return kernels<Version::modern>();
+  return with_version(version, [](auto tag) {
+    return Kernels{fill_planes<decltype(tag)::value>, match_words<decltype(tag)::value>};
+  });
 }
 
 } // namespace
 
-bool enabled() {
-  const auto* setting{std::getenv("TF_CUDA_BITPLANES")};
-  return !setting || std::string_view{setting} != "0";
-}
-
-bool trace_enabled() {
-  return std::getenv("TF_CUDA_BITPLANES_TRACE") != nullptr;
-}
-
-std::optional<SearchOutput> search(const SearchBounds& bounds,
-                                   std::span<const std::vector<BlockInfo>> formations, Version version) {
+std::optional<SharedSearchResult>
+search(const SearchBounds& bounds, std::span<const std::vector<BlockInfo>> formations, Version version) {
   const auto plan{plan_search(bounds, formations, available_plane_bytes(formations.size()))};
   if (!plan)
     return std::nullopt;
@@ -134,7 +111,7 @@ std::optional<SearchOutput> search(const SearchBounds& bounds,
     z_offset += slab.layout.nz;
   }
 
-  SearchOutput output;
+  SharedSearchResult output;
   output.kernel_seconds = timer.stop_seconds();
   for (const auto& buffer : buffers)
     output.directions.push_back(buffer.matches.collect());

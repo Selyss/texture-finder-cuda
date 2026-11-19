@@ -4,15 +4,14 @@
 #include <atomic>
 #include <bit>
 #include <chrono>
-#include <cstdlib>
 #include <stdexcept>
-#include <string_view>
 #include <thread>
 
 #include "backends/cpu/row_filter.hpp"
 #include "backends/cpu/worker_matches.hpp"
 #include "bitplanes/match.hpp"
 #include "bitplanes/plan.hpp"
+#include "texture/version_dispatch.hpp"
 
 namespace cpu_bitplanes {
 
@@ -102,19 +101,7 @@ private:
   // Hashes every field word of the slab, in the order the filter indexes them.
   // The loop is compiled once per version, so the hash has no branch on it.
   void fill(const Layout& layout, std::span<const int> plane_y) {
-    switch (job_.version) {
-    case Version::legacy:
-      return fill_as<Version::legacy>(layout, plane_y);
-    case Version::vanilla12:
-      return fill_as<Version::vanilla12>(layout, plane_y);
-    case Version::sodium:
-      return fill_as<Version::sodium>(layout, plane_y);
-    case Version::sodium19:
-      return fill_as<Version::sodium19>(layout, plane_y);
-    case Version::modern:
-      break;
-    }
-    fill_as<Version::modern>(layout, plane_y);
+    with_version(job_.version, [&](auto tag) { fill_as<decltype(tag)::value>(layout, plane_y); });
   }
 
   template <Version VERSION>
@@ -163,17 +150,8 @@ private:
 
 } // namespace
 
-bool enabled() {
-  const auto* setting{std::getenv("TF_CPU_BITPLANES")};
-  return !setting || std::string_view{setting} != "0";
-}
-
-bool trace_enabled() {
-  return std::getenv("TF_CPU_BITPLANES_TRACE") != nullptr;
-}
-
-std::optional<SearchOutput> search(const SearchBounds& bounds,
-                                   std::span<const std::vector<BlockInfo>> formations, Version version) {
+std::optional<SharedSearchResult>
+search(const SearchBounds& bounds, std::span<const std::vector<BlockInfo>> formations, Version version) {
   Job job{.bounds = bounds,
           .formations = formations,
           .version = version,
@@ -203,7 +181,7 @@ std::optional<SearchOutput> search(const SearchBounds& bounds,
   if (job.unplanned)
     throw std::logic_error{"a bitplane tile could not be planned"};
 
-  SearchOutput output{.directions = {}, .seconds = elapsed.count()};
+  SharedSearchResult output{.directions = {}, .kernel_seconds = elapsed.count()};
   for (std::size_t i{0}; i < formations.size(); ++i)
     output.directions.push_back(collect_matches(
         workers, [i](const Worker& worker) -> const WorkerMatches& { return worker.found(i); }));

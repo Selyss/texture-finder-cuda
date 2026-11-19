@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# End-to-end tests: runs the real GPU binary against the verified fixture and
-# against synthetic formations with known origins, covering both versions,
-# all directions, 'all' mode, and side faces. Requires a CUDA GPU.
+# End-to-end tests: runs the built binary, whichever backend it carries,
+# against the verified fixture and against synthetic formations with known
+# origins, covering every version, all directions, 'all' mode, and side faces.
 # Usage: test/e2e.sh   (from the repo root; builds via make if needed)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -66,10 +66,11 @@ bitplane_cases=0
 check_synthetic() { # <label> <expected-line> <args...>
     local label=$1 expected=$2; shift 2
     local g c
-    g=$(TF_CUDA_BITPLANES_TRACE=1 TF_METAL_BITPLANES_TRACE=1 TF_CPU_BITPLANES_TRACE=1 \
-        "$BIN" "$@" 2>"$TMP/trace.txt" | grep "^Match found" | sort) || true
+    local out
+    out=$("$BIN" "$@" 2>/dev/null) || true
+    g=$(grep "^Match found" <<<"$out" | sort) || true
     c=$("$CPU" "$@" 2>/dev/null | grep "^Match found" | sort) || true
-    if grep -q "search: bitplanes" "$TMP/trace.txt"; then bitplane_cases=$((bitplane_cases + 1)); fi
+    if grep -q "^Search: bitplanes" <<<"$out"; then bitplane_cases=$((bitplane_cases + 1)); fi
     if ! grep -qxF "$expected" <<<"$g"; then
         echo "FAIL: $label — missing: $expected"
         fails=$((fails + 1))
@@ -195,7 +196,34 @@ else
     fails=$((fails + 1))
 fi
 
-# 9. Input validation must fail loudly, not run garbage.
+# 9. The named form of the command line and the output modes, on the fixture.
+NAMED=(test/fixtures/formation_a.txt --y -64 -40 --center -108723 -69736 --radius 2000)
+out=$($BIN "${NAMED[@]}" --version 1.21.4)
+check "named options, release name, default facing" "Match found at [-108723, -54, -69736] facing North" "$out"
+out=$($BIN test/fixtures/formation_a.txt --version modern --facing north --y -64 -40 \
+    --x -110723 -106723 --z -71736 -67736)
+check "named options, --x/--z and --facing" "Match found at [-108723, -54, -69736]" "$out"
+out=$($BIN "${NAMED[@]}" --version 0 --facing 0 --quiet 2>&1)
+if [ "$out" = "Match found at [-108723, -54, -69736]" ]; then
+    echo "PASS: --quiet prints only the match"
+else
+    echo "FAIL: --quiet — got: $out"; fails=$((fails + 1))
+fi
+out=$($BIN "${NAMED[@]}" --version 0 --json 2>/dev/null)
+want='"total_matches":1,"truncated":false,"matches":[{"x":-108723,"y":-54,"z":-69736,"facing":"North"}]'
+if [ "$(wc -l <<<"$out" | tr -d ' ')" = 1 ] && grep -qF "$want" <<<"$out" \
+   && grep -qF '"status":"finished"' <<<"$out"; then
+    echo "PASS: --json prints one object with the match"
+else
+    echo "FAIL: --json — got: $out"; fails=$((fails + 1))
+fi
+if $BIN --help | grep -q "^Usage:"; then
+    echo "PASS: --help prints the usage and succeeds"
+else
+    echo "FAIL: --help"; fails=$((fails + 1))
+fi
+
+# 10. Input validation must fail loudly, not run garbage.
 if $BIN 0 100 0 10 0 100 0 <(echo "1 2 3 9 0") 0 >"$TMP/bad.out" 2>&1; then
     echo "FAIL: invalid rotation accepted"; fails=$((fails + 1))
 else
@@ -205,6 +233,16 @@ if $BIN 100 0 0 10 0 100 0 test/fixtures/formation_a.txt 0 >"$TMP/bad2.out" 2>&1
     echo "FAIL: min>max accepted"; fails=$((fails + 1))
 else
     echo "PASS: min>max rejected"
+fi
+if $BIN test/fixtures/formation_a.txt --version 1.21.4 --y 0 10 --x 0 10 >"$TMP/bad3.out" 2>&1; then
+    echo "FAIL: missing --z accepted"; fails=$((fails + 1))
+else
+    echo "PASS: missing --z rejected"
+fi
+if $BIN 0 10 0 10 0 10 sodium-1.20 test/fixtures/formation_a.txt 0 >"$TMP/bad4.out" 2>&1; then
+    echo "FAIL: unknown version accepted"; fails=$((fails + 1))
+else
+    echo "PASS: unknown version rejected"
 fi
 
 echo

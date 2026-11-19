@@ -40,9 +40,11 @@ struct DirectionResult {
   std::vector<MatchResult> matches; // sorted by x, y, z
   std::uint64_t total{0};           // includes matches beyond MAX_MATCHES
   bool truncated{false};
+  bool bitplanes{false}; // searched with bitplanes, not the plain search
   double kernel_seconds{0.0};
 };
 
+// One result per direction. kernel_seconds covers the whole pass.
 struct SharedSearchResult {
   std::vector<DirectionResult> directions;
   double kernel_seconds{0.0};

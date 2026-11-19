@@ -1,10 +1,8 @@
 #include "backends/metal/bitplane_search.hpp"
 
 #include <algorithm>
-#include <cstdlib>
 #include <cstring>
 #include <limits>
-#include <string_view>
 
 #include "backends/metal/device.hpp"
 #include "bitplanes/plan.hpp"
@@ -54,22 +52,13 @@ struct DirectionBuffers {
 
 } // namespace
 
-bool enabled() {
-  const auto* setting{std::getenv("TF_METAL_BITPLANES")};
-  return !setting || std::string_view{setting} != "0";
-}
-
-bool trace_enabled() {
-  return std::getenv("TF_METAL_BITPLANES_TRACE") != nullptr;
-}
-
-std::optional<SearchOutput> search(const SearchBounds& bounds,
-                                   std::span<const std::vector<BlockInfo>> formations, Version version) {
+std::optional<SharedSearchResult>
+search(const SearchBounds& bounds, std::span<const std::vector<BlockInfo>> formations, Version version) {
   const auto slab_rows{max_slab_rows(bounds)};
   if (slab_rows == 0)
     return std::nullopt;
 
-  SearchOutput output;
+  SharedSearchResult output;
   @autoreleasepool {
     const auto plane_bytes{std::min<std::size_t>(MAX_PLANE_BYTES, metal::device().maxBufferLength)};
     const auto plan{plan_search(bounds, formations, plane_bytes, slab_rows)};

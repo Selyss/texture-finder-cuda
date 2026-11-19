@@ -9,7 +9,7 @@
 #   test/validate_cuda.sh
 # ARCH selects the nvcc target (default native). PAIRS sets timed pairs (default 5).
 # HARNESS_MODES=all also runs every experiment mode of the harness (several
-# minutes); a list such as HARNESS_MODES="FUSED WORD_COLUMNS" runs only those.
+# minutes); a list such as HARNESS_MODES="FUSED DIAGNOSTICS" runs only those.
 # PLANE_BYTES=a:b:c also times the bitplane path under those field budgets,
 # which set the slab height.
 # TF_MODULES lists environment modules to load first. A SOURCE_COMMIT file, if
@@ -66,11 +66,11 @@ gate "e2e with bitplanes off" env TF_CUDA_BITPLANES=0 test/e2e.sh
 echo "== End-to-end, default path"
 gate "e2e with bitplanes on" env -u TF_CUDA_BITPLANES test/e2e.sh
 
-run() { # <mode: 0|1> <direction> -> stdout of the CLI; stderr kept for traces
+run() { # <mode: 0|1> <direction> -> output of the CLI, whose "Search:" line names the path
     if [ "$1" = 1 ]; then
-        env -u TF_CUDA_BITPLANES TF_CUDA_BITPLANES_TRACE=1 build/main "${REF[@]}" "$2" 2>&1
+        env -u TF_CUDA_BITPLANES build/main "${REF[@]}" "$2" 2>&1
     else
-        TF_CUDA_BITPLANES=0 TF_CUDA_BITPLANES_TRACE=1 build/main "${REF[@]}" "$2" 2>&1
+        TF_CUDA_BITPLANES=0 build/main "${REF[@]}" "$2" 2>&1
     fi
 }
 matches() { grep "^Match found" <<<"$1" | sort; }
@@ -79,19 +79,19 @@ kernel() { sed -n 's/^Kernel time: \(.*\) seconds/\1/p' <<<"$1"; }
 echo "== Path selection on the reference"
 one=$(run 1 0)
 all=$(run 1 all)
-gate "one direction uses bitplanes" grep -q "CUDA search: bitplanes" <<<"$one"
-gate "one direction never falls back" bash -c '! grep -q "baseline fallback" <<<"$1"' _ "$one"
-gate "all directions share one field" grep -q "bitplanes shared (4 directions)" <<<"$all"
+gate "one direction uses bitplanes" grep -qx "Search: bitplanes" <<<"$one"
+gate "one direction never falls back" bash -c '! grep -q "^Search: plain" <<<"$1"' _ "$one"
+gate "all directions use bitplanes" grep -qx "Search: bitplanes" <<<"$all"
 gate "reference match, one direction" [ "$(matches "$one")" = "$EXPECT" ]
 gate "reference match, all directions" [ "$(matches "$all")" = "$EXPECT facing North" ]
 off=$(run 0 0)
-gate "TF_CUDA_BITPLANES=0 keeps the standard kernel" bash -c '! grep -q "CUDA search:" <<<"$1"' _ "$off"
+gate "TF_CUDA_BITPLANES=0 keeps the standard kernel" grep -qx "Search: plain" <<<"$off"
 gate "standard kernel agrees, one direction" [ "$(matches "$off")" = "$EXPECT" ]
 gate "standard kernel agrees, all directions" [ "$(matches "$(run 0 all)")" = "$EXPECT facing North" ]
 
 echo "== Forced fallback (1-byte plane budget)"
-out=$(env -u TF_CUDA_BITPLANES TF_CUDA_BITPLANES_TRACE=1 TF_CUDA_BITPLANES_BYTES=1 build/main "${REF[@]}" 0 2>&1)
-gate "fallback is taken" grep -q "baseline fallback" <<<"$out"
+out=$(env -u TF_CUDA_BITPLANES TF_CUDA_BITPLANES_BYTES=1 build/main "${REF[@]}" 0 2>&1)
+gate "fallback is taken" grep -qx "Search: plain" <<<"$out"
 gate "fallback finds the match" [ "$(matches "$out")" = "$EXPECT" ]
 
 echo "== Checkpoint written by bitplanes, resumed by the standard kernel"
@@ -124,21 +124,21 @@ form=$(mktemp)
 seed=
 for try in $(seq 1 40); do
     build/gen_formation 0 0 -120000 -50 -50000 24 40 "$try" > "$form"
-    if env -u TF_CUDA_BITPLANES TF_CUDA_BITPLANES_TRACE=1 build/main -120100 -119900 -60 -45 -50050 -49950 0 \
-        "$form" 0 2>&1 | grep -q "CUDA search: bitplanes"; then
+    if env -u TF_CUDA_BITPLANES build/main -120100 -119900 -60 -45 -50050 -49950 0 "$form" 0 2>&1 |
+        grep -qx "Search: bitplanes"; then
         seed=$try
         break
     fi
 done
 gate "a generated formation qualifies for bitplanes" [ -n "$seed" ]
-for v in 0 1 2 3; do
+for v in 0 1 2 3 4; do
     build/gen_formation "$v" 0 -120000 -50 -50000 24 40 "${seed:-1}" > "$form"
     old=("${REF[@]:0:6}" "$v" "$form" 0)
-    on() { env -u TF_CUDA_BITPLANES TF_CUDA_BITPLANES_TRACE=1 build/main "${old[@]}" 2>&1; }
+    on() { env -u TF_CUDA_BITPLANES build/main "${old[@]}" 2>&1; }
     off() { TF_CUDA_BITPLANES=0 build/main "${old[@]}" 2>&1; }
     out=$(on)
     std=$(off)
-    gate "version $v uses bitplanes" grep -q "CUDA search: bitplanes" <<<"$out"
+    gate "version $v uses bitplanes" grep -qx "Search: bitplanes" <<<"$out"
     gate "version $v finds the planted formation" grep -qF "Match found at [-120000, -50, -50000]" <<<"$out"
     gate "version $v agrees with the standard kernel" [ "$(matches "$out")" = "$(matches "$std")" ]
     echo "$v,$(kernel "$(off)"),$(kernel "$(on)")"
@@ -153,7 +153,7 @@ if [ -n "${PLANE_BYTES:-}" ]; then
         for budget in ${PLANE_BYTES//:/ }; do
             out=$(export TF_CUDA_BITPLANES_BYTES=$budget; run 1 "$dir")
             gate "budget $budget, direction $dir: bitplanes find the match" \
-                [ "$(matches "$out")" = "$want" -a -z "$(grep 'baseline fallback' <<<"$out")" ]
+                [ "$(matches "$out")" = "$want" -a -z "$(grep '^Search: plain' <<<"$out")" ]
         done
         for pair in $(seq 1 "$PAIRS"); do
             for budget in ${PLANE_BYTES//:/ }; do
@@ -169,7 +169,7 @@ if [ -x build/flat_cuda ]; then
     gate "harness default run" "${harness[@]}"
     modes=${HARNESS_MODES:-}
     if [ "$modes" = all ]; then
-        modes="DUPLICATE_Y COMPARE_OFFSETS COMPARE_PACKING COMPARE_PACKING_SEARCH SHARED_FIELD FUSED WORD_COLUMNS MATCH_VARIANTS DIAGNOSTICS"
+        modes="DUPLICATE_Y COMPARE_OFFSETS COMPARE_PACKING COMPARE_PACKING_SEARCH SHARED_FIELD FUSED DIAGNOSTICS"
     fi
     # Each mode checks itself against the CPU reference or the standard kernel.
     for mode in $modes; do

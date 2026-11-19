@@ -7,7 +7,6 @@
 // instead (bitplane_search.hpp), which must return the same matches.
 
 #include <algorithm>
-#include <cstdio>
 #include <limits>
 #include <stdexcept>
 #include <vector>
@@ -89,11 +88,6 @@ struct TfBlock {
   return result;
 }
 
-void trace(const char* message) {
-  if (metal_bitplanes::trace_enabled())
-    std::fprintf(stderr, "Metal search: %s\n", message);
-}
-
 } // namespace
 
 DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockInfo>& blocks,
@@ -105,32 +99,23 @@ DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockIn
   if (ny > limit / nz || nx > limit / (ny * nz))
     throw std::invalid_argument{"search volume too large"};
 
-  if (metal_bitplanes::enabled() && bitplanes::eligible(blocks)) {
-    if (auto output{metal_bitplanes::search(bounds, std::span{&blocks, 1}, version)}) {
-      trace("bitplanes");
-      auto& result{output->directions.front()};
-      result.kernel_seconds = output->kernel_seconds;
-      return std::move(result);
-    }
-  }
-  trace("plain kernel");
-  return plain_search(bounds, blocks, version);
+  return bitplanes::search_one(
+      blocks, version,
+      [&](std::span<const std::vector<BlockInfo>> formations) {
+        return metal_bitplanes::search(bounds, formations, version);
+      },
+      [&] { return plain_search(bounds, blocks, version); });
 }
 
+// On unless TF_METAL_BITPLANES=0, which keeps every search on the plain kernel.
 bool shared_search_enabled(Version) {
-  return metal_bitplanes::enabled();
+  return bitplanes::enabled_by("TF_METAL_BITPLANES");
 }
 
 SharedSearchResult run_shared_search(const SearchBounds& bounds,
                                      std::span<const std::vector<BlockInfo>> directions, Version version) {
-  return bitplanes::search_sharing_field(
-      bounds, directions, version,
-      [&](std::span<const std::vector<BlockInfo>> shared) -> std::optional<SharedSearchResult> {
-        auto output{metal_bitplanes::search(bounds, shared, version)};
-        if (!output)
-          return std::nullopt;
-        if (metal_bitplanes::trace_enabled())
-          std::fprintf(stderr, "Metal search: bitplanes shared (%zu directions)\n", shared.size());
-        return SharedSearchResult{std::move(output->directions), output->kernel_seconds};
-      });
+  return bitplanes::search_sharing_field(bounds, directions, version,
+                                         [&](std::span<const std::vector<BlockInfo>> formations) {
+                                           return metal_bitplanes::search(bounds, formations, version);
+                                         });
 }

@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <cstdio>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -10,6 +9,7 @@
 #include "backends/cuda/match_buffer.hpp"
 #include "bitplanes/shared_search.hpp"
 #include "texture/texture_rules.hpp"
+#include "texture/version_dispatch.hpp"
 
 std::string_view search_backend_name() {
   return "CUDA";
@@ -172,19 +172,8 @@ using Count = cuda::MatchBuffer::Count;
 using Kernel = void (*)(SearchBounds, int, Count, Count*, MatchResult*, Count*);
 
 [[nodiscard]] Kernel kernel_for(Version version) {
-  switch (version) {
-  case Version::legacy:
-    return match_formation_kernel<Version::legacy>;
-  case Version::vanilla12:
-    return match_formation_kernel<Version::vanilla12>;
-  case Version::sodium:
-    return match_formation_kernel<Version::sodium>;
-  case Version::sodium19:
-    return match_formation_kernel<Version::sodium19>;
-  case Version::modern:
-    break;
-  }
-  return match_formation_kernel<Version::modern>;
+  return with_version(version,
+                      [](auto tag) -> Kernel { return match_formation_kernel<decltype(tag)::value>; });
 }
 
 [[nodiscard]] DevBlock device_block(const BlockInfo& block) {
@@ -246,11 +235,6 @@ using Kernel = void (*)(SearchBounds, int, Count, Count*, MatchResult*, Count*);
   return result;
 }
 
-void trace(const char* message) {
-  if (cuda_bitplanes::trace_enabled())
-    std::fprintf(stderr, "CUDA search: %s\n", message);
-}
-
 } // namespace
 
 DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockInfo>& blocks,
@@ -262,34 +246,23 @@ DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockIn
 
   // Searches use bitplanes when the formation filters well enough and
   // the field fits in memory.
-  if (shared_search_enabled(version)) {
-    if (bitplanes::eligible(blocks)) {
-      if (auto output{cuda_bitplanes::search(bounds, std::span{&blocks, 1}, version)}) {
-        trace("bitplanes");
-        auto& result{output->directions.front()};
-        result.kernel_seconds = output->kernel_seconds;
-        return std::move(result);
-      }
-    }
-    trace("baseline fallback");
-  }
-  return standard_search(bounds, blocks, version, positions);
+  return bitplanes::search_one(
+      blocks, version,
+      [&](std::span<const std::vector<BlockInfo>> formations) {
+        return cuda_bitplanes::search(bounds, formations, version);
+      },
+      [&] { return standard_search(bounds, blocks, version, positions); });
 }
 
+// On unless TF_CUDA_BITPLANES=0, which keeps every search on the standard kernel.
 bool shared_search_enabled(Version) {
-  return cuda_bitplanes::enabled();
+  return bitplanes::enabled_by("TF_CUDA_BITPLANES");
 }
 
 SharedSearchResult run_shared_search(const SearchBounds& bounds,
                                      std::span<const std::vector<BlockInfo>> directions, Version version) {
-  return bitplanes::search_sharing_field(
-      bounds, directions, version,
-      [&](std::span<const std::vector<BlockInfo>> shared) -> std::optional<SharedSearchResult> {
-        auto output{cuda_bitplanes::search(bounds, shared, version)};
-        if (!output)
-          return std::nullopt;
-        if (cuda_bitplanes::trace_enabled())
-          std::fprintf(stderr, "CUDA search: bitplanes shared (%zu directions)\n", shared.size());
-        return SharedSearchResult{std::move(output->directions), output->kernel_seconds};
-      });
+  return bitplanes::search_sharing_field(bounds, directions, version,
+                                         [&](std::span<const std::vector<BlockInfo>> formations) {
+                                           return cuda_bitplanes::search(bounds, formations, version);
+                                         });
 }

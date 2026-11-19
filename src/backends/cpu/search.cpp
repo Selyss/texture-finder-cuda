@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <cstdio>
 #include <limits>
 #include <span>
 #include <stdexcept>
@@ -101,11 +100,6 @@ void search_chunks(Job& job, WorkerMatches& found) {
   return result;
 }
 
-void trace(const char* message) {
-  if (cpu_bitplanes::trace_enabled())
-    std::fprintf(stderr, "CPU search: %s\n", message);
-}
-
 } // namespace
 
 DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockInfo>& blocks,
@@ -118,32 +112,23 @@ DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockIn
   if (ny > limit / nz || nx > limit / (ny * nz))
     throw std::invalid_argument{"search volume too large"};
 
-  if (cpu_bitplanes::enabled() && bitplanes::eligible(blocks)) {
-    if (auto output{cpu_bitplanes::search(bounds, std::span{&blocks, 1}, version)}) {
-      trace("bitplanes");
-      auto& result{output->directions.front()};
-      result.kernel_seconds = output->seconds;
-      return std::move(result);
-    }
-  }
-  trace("plain scan");
-  return plain_scan(bounds, blocks, version, nx * ny * nz);
+  return bitplanes::search_one(
+      blocks, version,
+      [&](std::span<const std::vector<BlockInfo>> formations) {
+        return cpu_bitplanes::search(bounds, formations, version);
+      },
+      [&] { return plain_scan(bounds, blocks, version, nx * ny * nz); });
 }
 
+// On unless TF_CPU_BITPLANES=0, which keeps every search on the plain scan.
 bool shared_search_enabled(Version) {
-  return cpu_bitplanes::enabled();
+  return bitplanes::enabled_by("TF_CPU_BITPLANES");
 }
 
 SharedSearchResult run_shared_search(const SearchBounds& bounds,
                                      std::span<const std::vector<BlockInfo>> directions, Version version) {
-  return bitplanes::search_sharing_field(
-      bounds, directions, version,
-      [&](std::span<const std::vector<BlockInfo>> shared) -> std::optional<SharedSearchResult> {
-        auto output{cpu_bitplanes::search(bounds, shared, version)};
-        if (!output)
-          return std::nullopt;
-        if (cpu_bitplanes::trace_enabled())
-          std::fprintf(stderr, "CPU search: bitplanes shared (%zu directions)\n", shared.size());
-        return SharedSearchResult{std::move(output->directions), output->seconds};
-      });
+  return bitplanes::search_sharing_field(bounds, directions, version,
+                                         [&](std::span<const std::vector<BlockInfo>> formations) {
+                                           return cpu_bitplanes::search(bounds, formations, version);
+                                         });
 }

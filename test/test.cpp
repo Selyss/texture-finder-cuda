@@ -17,6 +17,7 @@
 #include "texture/formation_io.hpp"
 #include "texture/rotation.hpp"
 #include "texture/texture_rules.hpp"
+#include "texture/version_names.hpp"
 
 // Verified in-game vectors for versions 1.21.2+ (top faces, mod 4).
 TEST_CASE("get_texture_modern - top faces") {
@@ -448,4 +449,30 @@ TEST_CASE("bitplanes - field, filter and survivor check find exactly the brute-f
     CHECK(found_origin);
     CHECK(found >= 1);
   }
+}
+
+TEST_CASE("parse_version - numbers, rule names, releases and Sodium releases") {
+  CHECK(parse_version("0") == Version::modern);
+  CHECK(parse_version("4") == Version::sodium19);
+  CHECK(parse_version("legacy") == Version::legacy);
+  CHECK(parse_version("sodium") == Version::sodium);
+
+  CHECK(parse_version("1.21.2") == Version::modern);
+  CHECK(parse_version("1.21.4") == Version::modern);
+  CHECK(parse_version("1.22") == Version::modern);
+  CHECK(parse_version("26.1") == Version::modern);
+  CHECK(parse_version("1.21.1") == Version::legacy);
+  CHECK(parse_version("1.21") == Version::legacy);
+  CHECK(parse_version("1.13") == Version::legacy);
+  CHECK(parse_version("1.12.2") == Version::vanilla12);
+  CHECK(parse_version("1.8.9") == Version::vanilla12);
+
+  CHECK(parse_version("sodium-1.16.5") == Version::sodium);
+  CHECK(parse_version("sodium-1.18.2") == Version::sodium);
+  CHECK(parse_version("sodium-1.19") == Version::sodium19);
+  CHECK(parse_version("sodium-1.19.3") == Version::sodium19);
+
+  for (const char* bad : {"", "5", "-1", "1.", "1.x", "1.21.4.1", "1.21 ", "sodium-1.15.2", "sodium-1.19.4",
+                          "sodium-", "Modern"})
+    CHECK_FALSE(parse_version(bad).has_value());
 }
