@@ -2482,6 +2482,33 @@ unused, left behind by the removed harness modes. GCC 12 also printed a
 concatenation in `rough_duration`; that function was then rewritten with
 `+=`, which has not been rebuilt with GCC.
 
+### Multi-device slab queue with several workers on one GPU (Narval A100, job 9786173)
+
+Node `ng11005`, one A100, CUDA 12.9, `sm_80`, every harness mode. All 88
+gates passed and the recorded source hashes equal the tree that was
+submitted. This is the first run of the multi-device code. It ran on one GPU
+by listing device 0 two, three and four times (`--devices 0,0,0`), which
+gives that device as many queue workers.
+
+- Dense volume (250,000 x 200 x 600, a formation with about one match per
+  four million positions): the single-device standard kernel found 7,283
+  matches with some on every one of the 600 z rows. With 2, 3 and 4 workers,
+  both the bitplane queue and the split standard kernel returned exactly that
+  list and that total.
+- A strong formation planted at z rows 63, 64, 99, 100, 127, 128, 199 and 200
+  of an unsliced 300-row volume, which are the rows on each side of the
+  queue's 64-row slabs and of the standard kernel's three parts: found at
+  its origin, and nowhere else, in every run.
+- The reference in all four directions with three workers found the match.
+
+Reference workload on one device, kernel seconds, median of five alternating
+pairs: 0.681815 standard and 0.124141 bitplanes for one direction, 2.725710
+and 0.328938 for all four. Unchanged from job `9569468`, so the single-device
+path costs nothing extra.
+
+Not covered by this job: several real GPUs, and `--part` with the merge
+tools, which were written after it was submitted.
+
 ### 32-bit hash on Metal, NEON fill, and a faster scalar CPU fill (M4 Pro, mains power, 2026-11-18)
 
 All three compute the same integers as the shipped rules; each was checked
@@ -2613,3 +2640,75 @@ for every word of the brute-force case), the e2e suite with bitplanes on and
 off, 150 random formations (300 runs, 87 on bitplanes, 131 with several
 matches) identical to the plain scan, and the 7,283-match dense volume
 identical to the plain scan.
+
+### Two real GPUs: correctness and 1 to 2 device scaling (Narval, 2 x A100, job 9800666)
+
+Node `ng30604`, two A100-SXM4-40GB, CUDA 12.9, `sm_80`. All 117 gates passed,
+including the multi-worker section and, for every scaling run below, finding
+the reference match. First run of the multi-device code on more than one
+card, and the first build of `--part` with the cluster's compiler. Devices
+were chosen with `--devices`, so every run used exactly the listed cards.
+
+Kernel seconds and whole-command seconds, medians of three runs (two for the
+plain 100k row, one for the plain 500k row). The areas are 100,000 and
+500,000 blocks square over 40 y levels, containing the reference match.
+
+| Workload | Path | 1 device kernel | 2 devices kernel | Speedup | 1 device whole | 2 devices whole | Speedup |
+|---|---|---:|---:|---:|---:|---:|---:|
+| reference, one direction | bitplanes | 0.135 | 0.073 | 1.84x | 0.761 | 0.928 | 0.82x |
+| 100k, one direction | bitplanes | 0.390 | 0.234 | 1.67x | 0.914 | 1.065 | 0.86x |
+| 100k, all four | bitplanes | 1.045 | 0.567 | 1.84x | 1.612 | 1.424 | 1.13x |
+| 500k, one direction | bitplanes | 9.699 | 4.918 | 1.97x | 10.268 | 5.815 | 1.77x |
+| 500k, all four | bitplanes | 25.915 | 13.132 | 1.97x | 26.516 | 14.050 | 1.89x |
+| 100k, one direction | plain | 2.180 | 1.548 | 1.41x | 2.757 | 2.078 | 1.33x |
+| 500k, one direction | plain | 54.437 | 27.745 | 1.96x | 55.101 | 28.240 | 1.95x |
+
+The work share was 50/50 on the 500k runs and between 52/48 and 56/44 on the
+short ones, where one device takes the session's small first slice alone.
+
+The second device adds about 0.3 s to the whole command (0.5 to 0.6 s of
+start-up and teardown on one device, 0.8 to 0.9 s on two). Searches of ten
+seconds or more reach 1.97x in kernel time and 1.8 to 1.9x overall. Searches
+under about half a second get slower overall with a second device, although
+their kernel time still drops.
+
+Because of that, the rule for the default device choice was changed after
+this job: instead of a fixed size (10^11 positions, under which the reference
+workload and the 100k one-direction search would both have used two devices
+and lost), the backend uses every device once a single call would take at
+least one second on one device, judged from the rate of the calls before it.
+
+### Default device choice by measured speed (Narval, 2 x A100, job 9802015)
+
+Node `ng30703`. All 135 gates passed and the recorded source hashes equal the
+local tree. Same scaling section as job `9800666`, plus an "auto" run of each
+workload with no `--devices`, where the backend decides. Medians of the
+whole-command seconds (three auto runs, two of the others; one each for the
+plain 500k row):
+
+| Workload | Path | 1 device | 2 devices | auto | auto used |
+|---|---|---:|---:|---:|---|
+| reference, one direction | bitplanes | 0.602 | 0.776 | 0.681 | one device |
+| 100k, one direction | bitplanes | 0.848 | 0.967 | 0.834 | both, 51/49 |
+| 100k, all four | bitplanes | 1.536 | 1.379 | 1.202 | both, 50/50 |
+| 500k, one direction | bitplanes | 10.163 | 5.730 | 5.539 | both, 50/50 |
+| 500k, all four | bitplanes | 26.514 | 13.996 | 13.756 | both, 50/50 |
+| 100k, one direction | plain | 2.653 | 1.962 | 1.784 | both, 50/50 |
+| 500k, one direction | plain | 55.090 | 28.181 | 28.011 | both, 50/50 |
+
+The default stays on one device for the reference workload and uses both for
+everything from the 100k area up. It is never meaningfully slower than the
+better of the two fixed choices, and on the short searches it is faster than
+listing both devices, because the session's first small slice no longer
+starts the second device. Kernel seconds for the 500k runs were 9.698 on one
+device and 4.88 to 4.93 on two, as in job `9800666`.
+
+### The cluster wrapper against real Slurm (Narval, array job 9804121)
+
+`tools/cluster_search.sh --jobs 2 --gpu-type a100` ran the 100k all-directions
+search (8 x 10^11 direction-positions) from the login node, in the tree that
+job `9802015` built. It submitted a two-task array with one A100 each, waited,
+and merged: "Pieces: 2, all present", the reference match facing North, one
+match. The pieces took 1.13 kernel seconds between them and the longer one
+1.05 s whole. This is the wrapper's only run under Slurm so far. The resubmit
+path for a failed piece has not been exercised there.
