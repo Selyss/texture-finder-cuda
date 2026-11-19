@@ -2431,3 +2431,53 @@ path and, with bitplanes left on, fails below 20 of 40. With the portable
 formations the count is 23 on both the Metal and the CPU build, covering
 every version (5, 1, 8, 4 and 5 searches for versions 0 to 4). The suite
 passes on both builds with bitplanes on and off. Not run on CUDA.
+
+### Named options, output modes and backend cleanup (M4, local, 2026-11-16)
+
+No kernel changed. Checked locally on the Metal and CPU builds: unit tests
+(22 cases, 790,592 assertions, with new cases for version names), and the
+e2e suite with bitplanes on and off, which now also covers the named form of
+the command line, `--quiet`, `--json`, `--help` and two rejected inputs.
+Both builds still report 23 of 40 synthetic searches on bitplanes, now read
+from the `Search:` line of the normal output instead of the trace variables,
+which are gone.
+
+The `Estimated time:` line uses the rate of the second slice. With the first
+slice's rate it said 17 s for a 7.3 s search, because that slice includes
+warm-up; with the second it said 7 s for 7.4 s and 27 s for 29.2 s (plain
+Metal kernel, reference volume, on battery).
+
+The CUDA sources changed (one result type, shared on/off and version
+dispatch helpers, two harness modes removed) and have not been compiled.
+
+### Named options and backend cleanup on CUDA (Narval A100, job 9569468)
+
+Node `ng31002`, CUDA 12.9, `sm_80`, every remaining harness mode. All 45
+gates passed and the 12 recorded source hashes equal the local tree. The e2e
+suite reported 23 of 40 synthetic searches on bitplanes, the same as the
+Metal and CPU builds, which confirms the generated formations are now the
+same on Linux.
+
+Reference workload, kernel seconds, median of five alternating pairs:
+0.681855 standard and 0.124010 bitplanes for one direction, 2.725720 and
+0.329019 for all four. Unchanged from job `9549732`, as expected: no kernel
+changed.
+
+Older versions, one planted formation per version (seed found by the
+script), one direction, one run each. The formation differs from job
+`9549732`'s because the generator changed, so the two tables are not
+comparable; sodium19 is new.
+
+| Version | Standard s | Bitplanes s | Ratio |
+|---|---:|---:|---:|
+| 0 modern | 0.681908 | 0.179300 | 3.8x |
+| 1 legacy | 0.672047 | 0.173264 | 3.9x |
+| 2 vanilla12 | 0.453882 | 0.109440 | 4.1x |
+| 3 sodium | 1.295620 | 0.351173 | 3.7x |
+| 4 sodium19 | 1.222330 | 0.336459 | 3.6x |
+
+The build printed two warnings. `standard_result` in `flat_cuda.cu` is now
+unused, left behind by the removed harness modes. GCC 12 also printed a
+`-Wrestrict` note inside its own `char_traits.h`, reached from the string
+concatenation in `rough_duration`; that function was then rewritten with
+`+=`, which has not been rebuilt with GCC.
