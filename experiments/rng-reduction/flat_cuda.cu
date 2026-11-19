@@ -1147,14 +1147,6 @@ void compare_packing_search(const SearchBounds& bounds, const std::vector<BlockI
   std::puts("PASS packing search exact standard-kernel match in every run");
 }
 
-// The standard kernel's result for blocks listed tops first.
-SearchResult standard_result(const SearchBounds& bounds, const std::vector<BlockInfo>& blocks) {
-  const auto side =
-      std::find_if(blocks.begin(), blocks.end(), [](const BlockInfo& block) { return block.is_side; });
-  float ms = 0;
-  return baseline_search(bounds, {blocks.begin(), side}, {side, blocks.end()}, ms);
-}
-
 int parse_int(std::string_view value) {
   int result = 0;
   const auto parsed = std::from_chars(value.data(), value.data() + value.size(), result);

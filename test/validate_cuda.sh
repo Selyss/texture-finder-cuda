@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Regression gate for the CUDA backend after a source change: clean build,
 # unit tests, the end-to-end suite with bitplanes off and on, forced fallback,
-# the older versions on a planted formation, the standalone harness build, and
-# a short reference timing.
+# the older versions on a planted formation, the multi-device code with several
+# workers on one GPU, the standalone harness build, and a short reference
+# timing. On a node with several GPUs it also times 1, 2, 4... devices.
 #
 # Usage, from a GPU node or under Slurm:
 #   sbatch --account=<account> --gpus=1 --cpus-per-task=8 --mem=16G --time=00:20:00 test/validate_cuda.sh
@@ -45,7 +46,8 @@ echo "job ${SLURM_JOB_ID:-none} on $(hostname)"
 if [ -f SOURCE_COMMIT ]; then cat SOURCE_COMMIT; else git rev-parse HEAD 2>/dev/null; git status --short 2>/dev/null | head -20; fi
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
 nvcc --version | tail -1
-sha src/backends/cuda/search.cu src/backends/cuda/bitplanes.cuh src/bitplanes/*.hpp src/bitplanes/plan.cpp \
+sha src/backends/cuda/search.cu src/backends/cuda/bitplane_search.cu src/backends/cuda/devices.hpp \
+    src/backends/cuda/bitplanes.cuh src/bitplanes/*.hpp src/bitplanes/plan.cpp \
     src/search/session.cpp src/search/checkpoint.cpp src/search/backend.hpp \
     experiments/rng-reduction/flat_cuda.cu experiments/rng-reduction/diagnostic_kernels.cuh
 
@@ -144,6 +146,85 @@ for v in 0 1 2 3 4; do
     echo "$v,$(kernel "$(off)"),$(kernel "$(on)")"
 done
 rm -f "$form"
+
+echo "== Several workers on one device (the multi-device code on one GPU)"
+# --devices 0,0,0 gives device 0 three workers, so the slab queue and the
+# split of the standard kernel run here exactly as they do across real GPUs.
+form=$(mktemp)
+# Weak but well filtered: about 7,000 matches, with some on every z row, so a
+# row that is skipped or searched twice at any seam changes the list.
+DENSE=(-125000 124999 0 199 -300 299 0 "$form" 0)
+build/gen_formation 0 0 0 0 0 11 0 19 > "$form"
+dense() { # <bitplanes 0|1> <device list>
+    if [ "$1" = 1 ]; then env -u TF_CUDA_BITPLANES build/main "${DENSE[@]}" --devices "$2" 2>&1
+    else TF_CUDA_BITPLANES=0 build/main "${DENSE[@]}" --devices "$2" 2>&1; fi
+}
+ref=$(dense 0 0)
+rows=$(matches "$ref" | sed 's/.*, \(-*[0-9]*\)\]$/\1/' | sort -u | wc -l)
+gate "dense reference has matches on all 600 z rows" [ "$rows" -eq 600 ]
+gate "dense reference, bitplanes on one device agree" [ "$(matches "$(dense 1 0)")" = "$(matches "$ref")" ]
+for list in 0,0 0,0,0 0,0,0,0; do
+    workers=$(tr -cd , <<<"$list" | wc -c); workers=$((workers + 1))
+    for mode in 1 0; do
+        [ "$mode" = 1 ] && path=bitplanes || path=plain
+        out=$(dense "$mode" "$list")
+        gate "$workers workers, $path: the single-device match list" [ "$(matches "$out")" = "$(matches "$ref")" ]
+        gate "$workers workers, $path: same total" \
+            [ "$(grep ' matches$' <<<"$out")" = "$(grep ' matches$' <<<"$ref")" ]
+        gate "$workers workers, $path: path and device count reported" \
+            [ "$(grep -c -e "^Search: $path\$" -e "^Devices: $workers x " <<<"$out")" = 2 ]
+        gate "$workers workers, $path: work share printed" grep -q "^Work share: device 0 " <<<"$out"
+    done
+done
+# A strong formation planted on and beside the rows where parts meet: an
+# unsliced 300-row volume splits at rows 100 and 200 for three workers of the
+# standard kernel, and into 64-row slabs for the queue.
+for z in 63 64 99 100 127 128 199 200; do
+    build/gen_formation 0 0 0 5 "$z" 24 40 "${seed:-1}" > "$form"
+    for mode in 1 0; do
+        out=$(if [ "$mode" = 1 ]; then env -u TF_CUDA_BITPLANES build/main -500 499 0 9 0 299 0 "$form" 0 --devices 0,0,0 2>&1
+              else TF_CUDA_BITPLANES=0 build/main -500 499 0 9 0 299 0 "$form" 0 --devices 0,0,0 2>&1; fi)
+        gate "origin on z row $z, bitplanes $mode, three workers" \
+            [ "$(matches "$out")" = "Match found at [0, 5, $z]" ]
+    done
+done
+out=$(env -u TF_CUDA_BITPLANES build/main "${REF[@]}" all --devices 0,0,0 2>&1)
+gate "reference, all directions, three workers" [ "$(matches "$out")" = "$EXPECT facing North" ]
+rm -f "$form"
+
+gpus=$(nvidia-smi -L | wc -l)
+if [ "$gpus" -gt 1 ]; then
+    echo "== Scaling across $gpus devices (seconds)"
+    # Fixed volumes that contain the reference match, searched on 1, 2, 4... devices.
+    echo "workload,path,devices,run,kernel_s,whole_s,work_share"
+    scale() { # <label> <bitplanes 0|1> <runs> <direction> <bounds...>
+        local label=$1 mode=$2 runs=$3 dir=$4; shift 4
+        local n list out path want=$EXPECT
+        [ "$dir" = all ] && want="$EXPECT facing North"
+        [ "$mode" = 1 ] && path=bitplanes || path=plain
+        for run in $(seq 1 "$runs"); do
+            # "auto" is the default: no --devices, the program decides.
+            for n in 1 2 4 8 auto; do
+                [ "$n" = auto ] || [ "$n" -le "$gpus" ] || continue
+                [ "$n" = auto ] && list= || list=$(seq -s, 0 $((n - 1)))
+                out=$(if [ "$mode" = 1 ]; then env -u TF_CUDA_BITPLANES build/main "$@" 0 test/fixtures/formation_a.txt "$dir" ${list:+--devices "$list"} 2>&1
+                      else TF_CUDA_BITPLANES=0 build/main "$@" 0 test/fixtures/formation_a.txt "$dir" ${list:+--devices "$list"} 2>&1; fi)
+                gate "scaling $label, $path, $n devices: finds the reference match" [ "$(matches "$out")" = "$want" ]
+                echo "$label-$dir,$path,$n,$run,$(kernel "$out"),$(sed -n 's/^Search completed in \(.*\) seconds/\1/p' <<<"$out"),$(sed -n 's/^Work share: //p' <<<"$out" | tr -d ',')"
+            done
+        done
+    }
+    # 100k x 100k and 500k x 500k areas, 40 y levels, centred on the reference match.
+    SMALL=(-158723 -58724 -64 -25 -119736 -19737)
+    LARGE=(-358723 141276 -64 -25 -319736 180263)
+    scale reference 1 3 0 "${REF[@]:0:6}"
+    scale 100k 1 3 0 "${SMALL[@]}"
+    scale 100k 1 3 all "${SMALL[@]}"
+    scale 500k 1 3 0 "${LARGE[@]}"
+    scale 500k 1 3 all "${LARGE[@]}"
+    scale 100k 0 2 0 "${SMALL[@]}"
+    scale 500k 0 1 0 "${LARGE[@]}"
+fi
 
 if [ -n "${PLANE_BYTES:-}" ]; then
     echo "== Field budget sweep (kernel seconds, $PAIRS runs each)"

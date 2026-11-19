@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "backends/metal/bitplane_search.hpp"
@@ -18,6 +19,20 @@
 
 std::string_view search_backend_name() {
   return "Metal";
+}
+
+std::string search_hardware() {
+  return metal::device().name.UTF8String;
+}
+
+// The Metal backend runs on the system's default GPU.
+void choose_search_devices(std::span<const int> devices) {
+  if (devices.size() != 1 || devices.front() != 0)
+    throw std::invalid_argument{"the Metal build runs on one GPU, device 0"};
+}
+
+std::vector<std::uint64_t> search_device_work() {
+  return {};
 }
 
 namespace {

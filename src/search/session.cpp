@@ -7,6 +7,7 @@
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <numeric>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -36,6 +37,7 @@ constexpr std::array<std::string_view, 4> DIRECTION_NAMES{"North", "West", "Sout
 
 void print_header(const SearchRequest& request) {
   std::cout << "Backend: " << search_backend_name() << "\n"
+            << "Devices: " << search_hardware() << "\n"
             << "Version: " << version_name(request.version) << "\n";
   if (request.directions.size() == 1)
     std::cout << "Facing: " << DIRECTION_NAMES[request.directions.front()] << "\n";
@@ -343,6 +345,19 @@ private:
     std::cout << "Estimated time: about " << rough_duration(seconds) << std::endl;
   }
 
+  // With several devices, how the positions were divided between them.
+  void print_work_share() {
+    const auto work{search_device_work()};
+    const auto total{std::accumulate(work.begin(), work.end(), std::uint64_t{0})};
+    if (work.size() < 2 || total == 0)
+      return;
+    std::cout << "Work share:";
+    for (std::size_t i{0}; i < work.size(); ++i)
+      std::cout << (i ? "," : "") << " device " << i << " "
+                << std::llround(100.0 * static_cast<double>(work[i]) / static_cast<double>(total)) << "%";
+    std::cout << std::endl;
+  }
+
   void sort_collected() {
     std::ranges::sort(collected_, {}, [](const Found& found) {
       return std::tuple{found.match.x, found.match.y, found.match.z, found.direction};
@@ -363,6 +378,8 @@ private:
       else
         std::cout << matches << (matches == 1 ? " match" : " matches") << std::endl;
     }
+    if (output_ == OutputMode::text)
+      print_work_share();
     if (truncated)
       notes(output_) << "Warning: only the first " << listed << " of " << matches
                      << " matches are listed; shrink the search area." << std::endl;

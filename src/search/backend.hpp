@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -52,6 +53,16 @@ struct SharedSearchResult {
 
 // "CPU", "CUDA" or "Metal".
 [[nodiscard]] std::string_view search_backend_name();
+
+// What the search runs on, for the report: "2 x A100-SXM4-40GB", "14 threads".
+[[nodiscard]] std::string search_hardware();
+
+// Restricts a backend that can use several devices to these device indices.
+// Throws std::invalid_argument if the backend cannot do that.
+void choose_search_devices(std::span<const int> devices);
+
+// Positions each device has searched so far. Empty unless there are several.
+[[nodiscard]] std::vector<std::uint64_t> search_device_work();
 
 // `blocks` is one direction's formation and must not be empty. Checks run in
 // the order given, so the session lists top faces first: they reject more.

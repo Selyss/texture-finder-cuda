@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #include "backends/cuda/device.hpp"
 #include "search/backend.hpp"
@@ -38,5 +39,22 @@ private:
   DeviceArray<MatchResult> matches_;
   DeviceArray<Count> count_;
 };
+
+// One result from the results of disjoint parts of a search. The time is
+// left for the caller.
+[[nodiscard]] inline DirectionResult merge_results(std::vector<DirectionResult> parts) {
+  DirectionResult merged;
+  for (auto& part : parts) {
+    merged.total += part.total;
+    merged.matches.insert(merged.matches.end(), part.matches.begin(), part.matches.end());
+  }
+  std::sort(merged.matches.begin(), merged.matches.end(), [](const MatchResult& a, const MatchResult& b) {
+    return std::tuple{a.x, a.y, a.z} < std::tuple{b.x, b.y, b.z};
+  });
+  if (merged.matches.size() > MAX_MATCHES)
+    merged.matches.resize(MAX_MATCHES);
+  merged.truncated = merged.total > MAX_MATCHES;
+  return merged;
+}
 
 } // namespace cuda

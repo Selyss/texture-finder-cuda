@@ -147,6 +147,14 @@ main <x_min> <x_max> <y_min> <y_max> <z_min> <z_max> <version> <file> <direction
   rerunning the identical command resumes an interrupted search where it
   stopped (the state file is verified against the arguments and formation,
   and removed on completion)
+- `--devices <list>` (optional, CUDA build): the GPUs to use, such as `0,2`.
+  By default the search uses every GPU in the machine. The `Devices:` line
+  says what it is running on, and with several GPUs a `Work share:` line at
+  the end says how the search was divided. Each GPU takes the next piece of
+  the search as it finishes the last, so faster cards do more of it
+- `--part <i>/<n>` (optional): search only piece `i` of `n` equal pieces of
+  the z range, so several machines can each take one (see "Searching on a
+  cluster" below)
 - `--quiet` (optional): print only the `Match found` lines, with no progress
   line
 - `--json` (optional): print one JSON object instead of the text report,
@@ -187,12 +195,32 @@ line. Existing checkpoints resume in their original order. New slice-first
 checkpoints require a build that supports them and can resume with bitplanes
 disabled.
 
+### Searching on a cluster
+
+One machine needs nothing extra: the search uses every GPU it finds. A
+cluster is many machines, so its scheduler has to start the program on each.
+`tools/cluster_search.sh` does that with Slurm: it cuts the search into one
+piece per job, submits the jobs, waits, and prints the combined result.
+
+```
+tools/cluster_search.sh --jobs 16 --account def-someone_gpu --gpu-type a100 -- \
+    formation.txt --version 1.21.4 --y -64 100 --center 0 0 --radius 2000000
+```
+
+Each job runs the normal search with `--part i/n --json`, and
+`tools/merge_parts.py` combines the results. The merge prints an answer only
+if every piece of the same search is present exactly once and finished; a
+piece whose job failed is submitted once more, and otherwise the missing
+piece numbers are listed. `--local` runs the pieces one after another on the
+current machine, without Slurm. The merge needs `python3`.
+
 Example — search a 20k × 20k area, all orientations, 1.21.2+ rules:
 
 ```
 $ ./build/main -10000 10000 -64 100 -10000 10000 0 formation.txt all
 24 blocks read from formation file: formation.txt
 Backend: CUDA
+Devices: 1 x NVIDIA A100-SXM4-40GB
 Version: 1.21.2+
 Facing: trying all directions
 Search: bitplanes

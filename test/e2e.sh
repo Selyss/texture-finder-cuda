@@ -223,7 +223,31 @@ else
     echo "FAIL: --help"; fails=$((fails + 1))
 fi
 
-# 10. Input validation must fail loudly, not run garbage.
+# 10. A search run in pieces with --part and merged must equal the whole
+#     search, and the merge must refuse an incomplete set.
+if command -v python3 >/dev/null; then
+    PIECES="$TMP/pieces"
+    whole=$($BIN "${NAMED[@]}" --version 0 | grep "^Match found")
+    merged=$(tools/cluster_search.sh --local --jobs 5 --dir "$PIECES" --bin "$BIN" -- "${NAMED[@]}" --version 0)
+    if [ "$(grep "^Match found" <<<"$merged")" = "$whole" ] && grep -q "^Pieces: 5, all present" <<<"$merged"; then
+        echo "PASS: five pieces merge to the whole search's match"
+    else
+        echo "FAIL: pieces — got: $merged"; fails=$((fails + 1))
+    fi
+    rm "$PIECES/part-3.json"
+    set +e
+    out=$(tools/merge_parts.py "$PIECES"/part-*.json 2>/dev/null); rc=$?
+    set -e
+    if [ "$rc" -eq 2 ] && [ "$out" = "Missing: 3" ]; then
+        echo "PASS: merge refuses a missing piece and names it"
+    else
+        echo "FAIL: merge with a missing piece (rc=$rc): $out"; fails=$((fails + 1))
+    fi
+else
+    echo "SKIP: pieces and merge (no python3)"
+fi
+
+# 11. Input validation must fail loudly, not run garbage.
 if $BIN 0 100 0 10 0 100 0 <(echo "1 2 3 9 0") 0 >"$TMP/bad.out" 2>&1; then
     echo "FAIL: invalid rotation accepted"; fails=$((fails + 1))
 else

@@ -2,6 +2,7 @@
 #include <charconv>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <iostream>
 #include <optional>
 #include <span>
@@ -10,6 +11,7 @@
 #include <string_view>
 #include <vector>
 
+#include "search/checkpoint.hpp"
 #include "search/session.hpp"
 #include "texture/formation_io.hpp"
 #include "texture/version_names.hpp"
@@ -38,6 +40,11 @@ constexpr std::string_view USAGE{
     "options:\n"
     "  --checkpoint <state-file>: persist progress after every slice; rerunning the\n"
     "             same command resumes an interrupted search from the saved state\n"
+    "  --devices LIST: on a CUDA build, the GPUs to use, such as 0,2. The default\n"
+    "             is every GPU, and the work is shared by how fast each one is\n"
+    "  --part I/N: search only piece I of N equal pieces of the z range, so N\n"
+    "             machines can each take one; tools/merge_parts.py combines the\n"
+    "             --json results and checks that no piece is missing\n"
     "  --quiet:   print only the 'Match found' lines, with no progress line\n"
     "  --json:    print one JSON object with the matches instead of the text report\n"
     "  --help:    show this text\n"};
@@ -97,7 +104,7 @@ struct Range {
 struct Arguments {
   std::vector<std::string_view> positional;
   std::optional<Range> x, y, z, center;
-  std::optional<std::string_view> radius, version, facing, checkpoint;
+  std::optional<std::string_view> radius, version, facing, checkpoint, devices, part;
   OutputMode output{OutputMode::text};
 };
 
@@ -144,6 +151,10 @@ struct Arguments {
       result.facing = value();
     else if (arg == "--checkpoint")
       result.checkpoint = value();
+    else if (arg == "--devices")
+      result.devices = value();
+    else if (arg == "--part")
+      result.part = value();
     else
       throw UsageError{"unknown option: " + std::string{arg}};
   }
@@ -199,8 +210,47 @@ struct Fields {
   return {{}, *args.y, {}, *args.version, args.positional.front(), args.facing.value_or("all")};
 }
 
+// "0,2" as {0, 2}.
+[[nodiscard]] std::vector<int> device_list(std::string_view text) {
+  std::vector<int> devices;
+  for (std::size_t start{0}; start <= text.size();) {
+    const auto comma{std::min(text.find(',', start), text.size())};
+    devices.push_back(parse_int(text.substr(start, comma - start), "device", 0, 1023));
+    start = comma + 1;
+  }
+  return devices;
+}
+
+// Which piece of a search this run is. `search_id` identifies the whole
+// search, so results of different searches are never merged.
+struct Part {
+  int index{1}, count{1};
+  std::uint64_t search_id{0};
+};
+
+struct Command {
+  SearchRequest request;
+  Part part;
+};
+
+// Piece `index` of `count` equal runs of z rows: every row is in exactly one.
+[[nodiscard]] SearchBounds part_of(SearchBounds bounds, std::string_view text, Part& part) {
+  const auto slash{text.find('/')};
+  if (slash == std::string_view::npos)
+    throw UsageError{"--part takes I/N, such as 3/16"};
+  const auto rows{static_cast<std::int64_t>(bounds.nz())};
+  part.count = parse_int(text.substr(slash + 1), "part count", 1, rows);
+  part.index = parse_int(text.substr(0, slash), "part", 1, part.count);
+  const auto first{rows * (part.index - 1) / part.count};
+  const auto end{rows * part.index / part.count};
+  const auto z_min{std::int64_t{bounds.z_min}};
+  bounds.z_min = static_cast<int>(z_min + first);
+  bounds.z_max = static_cast<int>(z_min + end - 1);
+  return bounds;
+}
+
 // args excludes the program name.
-[[nodiscard]] SearchRequest parse_request(std::span<const char* const> args) {
+[[nodiscard]] Command parse_request(std::span<const char* const> args) {
   const auto arguments{split_arguments(args)};
   try {
     SearchBounds bounds{};
@@ -216,17 +266,27 @@ struct Fields {
     if (bounds.x_min > bounds.x_max || bounds.y_min > bounds.y_max || bounds.z_min > bounds.z_max)
       throw UsageError{"min bound exceeds max bound"};
 
+    if (arguments.devices)
+      choose_search_devices(device_list(*arguments.devices));
     const auto version{version_from(fields.version)};
     auto directions{directions_from(fields.facing)};
     auto formation{parse_formation_file(std::string{fields.file})};
     if (arguments.output == OutputMode::text)
       std::cout << formation.size() << " blocks read from formation file: " << fields.file << std::endl;
-    return {.bounds = bounds,
-            .formation = std::move(formation),
-            .version = version,
-            .directions = std::move(directions),
-            .checkpoint_path = std::string{arguments.checkpoint.value_or("")},
-            .output = arguments.output};
+    SearchRequest request{.bounds = bounds,
+                          .formation = std::move(formation),
+                          .version = version,
+                          .directions = std::move(directions),
+                          .checkpoint_path = std::string{arguments.checkpoint.value_or("")},
+                          .output = arguments.output};
+    Part part{.index = 1, .count = 1, .search_id = checkpoint_signature(request)};
+    if (arguments.part) {
+      request.bounds = part_of(bounds, *arguments.part, part);
+      if (arguments.output == OutputMode::text)
+        std::cout << "Part: " << part.index << " of " << part.count << " (z " << request.bounds.z_min
+                  << " to " << request.bounds.z_max << ")" << std::endl;
+    }
+    return {std::move(request), part};
   } catch (const UsageError&) {
     throw;
   } catch (const std::exception& error) {
@@ -235,14 +295,20 @@ struct Fields {
 }
 
 // One object on one line. Every string in it is one of ours, so none needs escaping.
-void print_json(const SearchRequest& request, const SearchOutcome& outcome, double seconds) {
+void print_json(const Command& command, const SearchOutcome& outcome, double seconds) {
+  const auto& request{command.request};
   const auto& bounds{request.bounds};
+  const auto& part{command.part};
+  char search_id[17];
+  std::snprintf(search_id, sizeof search_id, "%016llx", static_cast<unsigned long long>(part.search_id));
   std::cout << "{\"status\":\"" << (outcome.status == SessionStatus::finished ? "finished" : "stopped")
-            << "\",\"backend\":\"" << search_backend_name() << "\",\"version\":\""
-            << version_name(request.version) << "\",\"search\":\"" << outcome.search
+            << "\",\"backend\":\"" << search_backend_name() << "\",\"devices\":\"" << search_hardware()
+            << "\",\"version\":\"" << version_name(request.version) << "\",\"search\":\"" << outcome.search
             << "\",\"bounds\":{\"x\":[" << bounds.x_min << "," << bounds.x_max << "],\"y\":[" << bounds.y_min
-            << "," << bounds.y_max << "],\"z\":[" << bounds.z_min << "," << bounds.z_max
-            << "]},\"total_matches\":" << outcome.total_matches
+            << "," << bounds.y_max << "],\"z\":[" << bounds.z_min << "," << bounds.z_max << "]},\"part\":["
+            << part.index << "," << part.count << "],\"search_id\":\"" << search_id << "\",\"facing\":\""
+            << (request.directions.size() > 1 ? "all" : direction_name(request.directions.front()))
+            << "\",\"total_matches\":" << outcome.total_matches
             << ",\"truncated\":" << (outcome.truncated ? "true" : "false") << ",\"matches\":[";
   for (std::size_t i{0}; i < outcome.matches.size(); ++i) {
     const auto& [match, direction]{outcome.matches[i]};
@@ -258,12 +324,13 @@ void print_json(const SearchRequest& request, const SearchOutcome& outcome, doub
 int main(int argc, char* argv[]) {
   const auto started{std::chrono::steady_clock::now()};
   try {
-    const auto request{parse_request({argv + 1, argv + argc})};
+    const auto command{parse_request({argv + 1, argv + argc})};
+    const auto& request{command.request};
     const auto outcome{run_search_session(request)};
     const std::chrono::duration<double> elapsed{std::chrono::steady_clock::now() - started};
 
     if (request.output == OutputMode::json)
-      print_json(request, outcome, elapsed.count());
+      print_json(command, outcome, elapsed.count());
     if (outcome.status == SessionStatus::stopped)
       return 3;
     if (request.output == OutputMode::text)

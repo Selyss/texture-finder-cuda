@@ -11,6 +11,7 @@
 #include <limits>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -22,6 +23,18 @@
 
 std::string_view search_backend_name() {
   return "CPU";
+}
+
+std::string search_hardware() {
+  return std::to_string(std::max(1u, std::thread::hardware_concurrency())) + " threads";
+}
+
+void choose_search_devices(std::span<const int>) {
+  throw std::invalid_argument{"--devices needs a GPU build; this one runs on CPU threads"};
+}
+
+std::vector<std::uint64_t> search_device_work() {
+  return {};
 }
 
 namespace {

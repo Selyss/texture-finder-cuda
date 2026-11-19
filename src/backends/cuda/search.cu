@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -6,6 +7,7 @@
 
 #include "backends/cuda/bitplane_search.hpp"
 #include "backends/cuda/device.hpp"
+#include "backends/cuda/devices.hpp"
 #include "backends/cuda/match_buffer.hpp"
 #include "bitplanes/shared_search.hpp"
 #include "texture/texture_rules.hpp"
@@ -235,7 +237,56 @@ using Kernel = void (*)(SearchBounds, int, Count, Count*, MatchResult*, Count*);
   return result;
 }
 
+// The standard kernel on every device: the z range is cut into one run of
+// rows per device. Every row belongs to exactly one part, and the kernel
+// hashes each block from its coordinates, so a formation that reaches past
+// the end of a part is still checked in full.
+[[nodiscard]] DirectionResult standard_search_on_devices(const SearchBounds& bounds,
+                                                         std::span<const BlockInfo> blocks, Version version,
+                                                         Count positions) {
+  const auto devices{cuda::devices_for(cuda::Path::standard, positions)};
+  const auto nz{bounds.nz()};
+  if (devices.size() == 1 || nz < devices.size()) {
+    cuda::check(cudaSetDevice(devices.front()));
+    auto result{standard_search(bounds, blocks, version, positions)};
+    cuda::note_rate(cuda::Path::standard, positions, result.kernel_seconds, 1);
+    return result;
+  }
+
+  const auto layer{positions / nz};
+  const auto first_row{[&](std::size_t part) { return nz * part / devices.size(); }};
+  std::vector<DirectionResult> parts(devices.size());
+
+  const auto started{std::chrono::steady_clock::now()};
+  cuda::on_each_device(devices, [&](std::size_t worker) {
+    const auto first{first_row(worker)}, end{first_row(worker + 1)};
+    auto part{bounds};
+    part.z_min = static_cast<int>(bounds.z_min + static_cast<std::int64_t>(first));
+    part.z_max = static_cast<int>(bounds.z_min + static_cast<std::int64_t>(end) - 1);
+    parts[worker] = standard_search(part, blocks, version, layer * (end - first));
+    cuda::add_work(worker, layer * (end - first));
+  });
+  const std::chrono::duration<double> elapsed{std::chrono::steady_clock::now() - started};
+
+  auto result{cuda::merge_results(std::move(parts))};
+  result.kernel_seconds = elapsed.count();
+  cuda::note_rate(cuda::Path::standard, positions, result.kernel_seconds, devices.size());
+  return result;
+}
+
 } // namespace
+
+std::string search_hardware() {
+  return cuda::describe_devices();
+}
+
+void choose_search_devices(std::span<const int> devices) {
+  cuda::choose_devices(devices);
+}
+
+std::vector<std::uint64_t> search_device_work() {
+  return cuda::work_done();
+}
 
 DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockInfo>& blocks,
                            Version version) {
@@ -251,7 +302,7 @@ DirectionResult run_search(const SearchBounds& bounds, const std::vector<BlockIn
       [&](std::span<const std::vector<BlockInfo>> formations) {
         return cuda_bitplanes::search(bounds, formations, version);
       },
-      [&] { return standard_search(bounds, blocks, version, positions); });
+      [&] { return standard_search_on_devices(bounds, blocks, version, positions); });
 }
 
 // On unless TF_CUDA_BITPLANES=0, which keeps every search on the standard kernel.
