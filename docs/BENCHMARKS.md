@@ -352,3 +352,19 @@ with the table above.
 On the reference workload the same job measured 0.123920 s for one direction
 and 0.328846 s for all four (medians of five pairs), after the match kernel
 changed to z-major order and a 32-bit field index.
+
+## CPU fill packed as bit pairs (2026-11-18)
+
+Apple M4 Pro, 14 CPU cores, mains power, the same reference workload, kernel
+seconds, medians of seven alternating runs. "Before" is the build of the
+previous commit, which already had the per-version fill.
+
+| Backend | Directions | Before | After | Ratio |
+|---|---|---:|---:|---:|
+| CPU | one | 3.258 s | 2.658 s | 1.23× |
+| CPU | all four | 6.528 s | 5.766 s | 1.13× |
+
+Against the plain scan of the first table in the section above (62.35 s),
+one direction is now 23× faster. The same session measured the Metal backend
+at 0.613 s for one direction and 1.520 s for all four, unchanged in code
+since the table above.

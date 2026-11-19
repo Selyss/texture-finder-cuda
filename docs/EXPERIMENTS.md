@@ -2481,3 +2481,54 @@ unused, left behind by the removed harness modes. GCC 12 also printed a
 `-Wrestrict` note inside its own `char_traits.h`, reached from the string
 concatenation in `rough_duration`; that function was then rewritten with
 `+=`, which has not been rebuilt with GCC.
+
+### 32-bit hash on Metal, NEON fill, and a faster scalar CPU fill (M4 Pro, mains power, 2026-11-18)
+
+All three compute the same integers as the shipped rules; each was checked
+word for word before it was timed.
+
+**A 32-bit form of the modern hash on Metal: slower, not adopted.** The x
+term is a sign-extended 32-bit value, so the hash can be written with 32-bit
+multiplies and `mulhi`, skipping the parts of each product the two rotation
+bits never depend on. Exact on two million random inputs and in the field
+test. Reference workload, nine alternating runs, kernel seconds:
+
+| Build | One direction | All four |
+|---|---:|---:|
+| shipped (64-bit) | 0.613463 | 1.520030 |
+| 32-bit hash in the fill | 0.737071 | 1.642870 |
+
+Every run of each build was within 0.001 s of its median. The Apple GPU does
+the 64-bit multiplies faster than the hand-written split.
+
+**A NEON fill: slower, not adopted.** The same split with two hashes per
+vector (`vmull_u32` for the wide products), single thread, 512 million
+hashes: 1.15 ns per hash against 0.77 ns for the shipped scalar loop, with no
+mismatched word. An earlier note in this file said a vector fill was not
+possible without a 64-bit vector multiply; it is possible, and on this CPU it
+loses.
+
+**Packing rotations as bit pairs on the CPU: adopted.** The shared
+`hash_word` shifts each rotation bit into two 32-bit registers, which is what
+the GPUs want. Keeping the two bits of a rotation together (32 rotations
+OR-ed into one word as pairs, split into the two planes once per word) took
+0.61 ns per hash in the same benchmark, against 0.77 ns. Writing the hash as
+`u * (u * k + 11)` made no further difference. It is the CPU backend's own
+fill now (`src/backends/cpu/field_fill.hpp`), and the unit test requires it
+to equal `field_word` for every word of the brute-force case in every
+version.
+
+Whole CPU search, reference workload, kernel seconds, alternating runs
+(seven for version 0, three for the others), medians:
+
+| Version | Directions | Before | After | Change |
+|---|---|---:|---:|---:|
+| 0 modern | one | 3.258 | 2.658 | -18.4% |
+| 0 modern | all four | 6.528 | 5.766 | -11.7% |
+| 1 legacy | one | 3.625 | 3.329 | -8.2% |
+| 2 vanilla12 | one | 2.707 | 2.246 | -17.0% |
+| 3 sodium | one | 7.558 | 6.995 | -7.4% |
+| 4 sodium19 | one | 5.968 | 5.445 | -8.8% |
+
+"Before" already includes the per-version fill of 2026-11-16. The CPU e2e
+suite passes with bitplanes on and off.

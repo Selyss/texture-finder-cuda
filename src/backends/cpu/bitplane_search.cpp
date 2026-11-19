@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <thread>
 
+#include "backends/cpu/field_fill.hpp"
 #include "backends/cpu/row_filter.hpp"
 #include "backends/cpu/worker_matches.hpp"
 #include "bitplanes/match.hpp"
@@ -110,7 +111,7 @@ private:
     for (const int y : plane_y) {
       for (int z_index{0}; z_index < layout.hashed_rows; ++z_index)
         for (int word{0}; word < layout.field_words; ++word)
-          *word_out++ = field_word(VERSION, layout, y, z_index, word);
+          *word_out++ = fill_word<VERSION>(layout, y, z_index, word);
     }
   }
 

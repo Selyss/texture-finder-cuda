@@ -10,6 +10,7 @@
 #include <vector>
 
 // The real headers the kernel compiles — not copies.
+#include "backends/cpu/field_fill.hpp"
 #include "backends/cpu/row_filter.hpp"
 #include "bitplanes/match.hpp"
 #include "bitplanes/plan.hpp"
@@ -17,6 +18,7 @@
 #include "texture/formation_io.hpp"
 #include "texture/rotation.hpp"
 #include "texture/texture_rules.hpp"
+#include "texture/version_dispatch.hpp"
 #include "texture/version_names.hpp"
 
 // Verified in-game vectors for versions 1.21.2+ (top faces, mod 4).
@@ -408,8 +410,15 @@ TEST_CASE("bitplanes - field, filter and survivor check find exactly the brute-f
       field.clear();
       for (const int y : plan->plane_y)
         for (int z_index = 0; z_index < layout.hashed_rows; ++z_index)
-          for (int word = 0; word < layout.field_words; ++word)
+          for (int word = 0; word < layout.field_words; ++word) {
             field.push_back(field_word(v, layout, y, z_index, word));
+            // The CPU backend's own fill must write the same word.
+            const auto cpu_word = with_version(v, [&](auto tag) {
+              return cpu_bitplanes::fill_word<decltype(tag)::value>(layout, y, z_index, word);
+            });
+            REQUIRE(cpu_word.low == field.back().low);
+            REQUIRE(cpu_word.high == field.back().high);
+          }
       prepare_plane_checks(layout, direction.checks, direction.offsets.data(), checks);
       std::vector<Word> row_masks(static_cast<std::size_t>(layout.candidate_words));
 

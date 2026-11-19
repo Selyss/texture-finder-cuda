@@ -6,8 +6,8 @@
   and both legacy Sodium variants
 - Runs on NVIDIA GPUs (CUDA), Apple GPUs (Metal), or any CPU (portable
   multithreaded C++) — all from the same code and with identical results
-- Fast: 1.25 × 10¹¹ candidate positions in 0.13 s on an A100, 0.64 s on an
-  M4 Pro GPU and 3.5 s on its CPU, where the reference Java tool takes over
+- Fast: 1.25 × 10¹¹ candidate positions in 0.12 s on an A100, 0.61 s on an
+  M4 Pro GPU and 2.7 s on its CPU, where the reference Java tool takes over
   three minutes on a server ([benchmarks](docs/BENCHMARKS.md))
 - *Does not require the world seed*
 
