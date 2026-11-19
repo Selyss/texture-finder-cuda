@@ -368,3 +368,15 @@ Against the plain scan of the first table in the section above (62.35 s),
 one direction is now 23× faster. The same session measured the Metal backend
 at 0.613 s for one direction and 1.520 s for all four, unchanged in code
 since the table above.
+
+## CPU match with separate planes and a branch-free survivor check (2026-11-18)
+
+Apple M4 Pro, 14 CPU cores, mains power, the same reference workload, kernel
+seconds, medians of nine alternating runs. "Before" is the build of the
+section above. Another application was using CPU during these runs, which is
+why "before" is a little slower than there.
+
+| Backend | Directions | Before | After | Ratio |
+|---|---|---:|---:|---:|
+| CPU | one | 2.739 s | 2.583 s | 1.06× |
+| CPU | all four | 5.682 s | 4.769 s | 1.19× |

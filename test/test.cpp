@@ -421,14 +421,20 @@ TEST_CASE("bitplanes - field, filter and survivor check find exactly the brute-f
           }
       prepare_plane_checks(layout, direction.checks, direction.offsets.data(), checks);
       std::vector<Word> row_masks(static_cast<std::size_t>(layout.candidate_words));
+      // The CPU backend keeps the two planes of the field apart.
+      std::vector<Word> low_plane, high_plane;
+      for (const auto& planes : field) {
+        low_plane.push_back(planes.low);
+        high_plane.push_back(planes.high);
+      }
 
       for (int y_row = 0; y_row < layout.ny; ++y_row)
         for (int z_row = 0; z_row < layout.nz; ++z_row)
           for (int word = 0; word < layout.candidate_words; ++word) {
             if (word == 0)
-              cpu_bitplanes::filter_row(layout, checks.data(), direction.offsets.data(), field.data(),
-                                        static_cast<std::size_t>(y_row), static_cast<std::size_t>(z_row),
-                                        row_masks.data());
+              cpu_bitplanes::filter_row(layout, checks.data(), direction.offsets.data(), low_plane.data(),
+                                        high_plane.data(), static_cast<std::size_t>(y_row),
+                                        static_cast<std::size_t>(z_row), row_masks.data());
             const int y = layout.bounds.y_min + y_row, z = layout.bounds.z_min + z_row;
             const int coset = residue(z);
             const Word mask =

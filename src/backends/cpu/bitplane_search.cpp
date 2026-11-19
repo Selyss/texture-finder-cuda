@@ -86,8 +86,10 @@ private:
       job_.unplanned = true;
       return;
     }
-    if (field_.size() < plan->plane_words)
-      field_.resize(plan->plane_words);
+    if (low_.size() < plan->plane_words) {
+      low_.resize(plan->plane_words);
+      high_.resize(plan->plane_words);
+    }
 
     const auto nz{static_cast<std::int64_t>(tile.nz())};
     for (std::int64_t z_offset{0}; z_offset < nz;) {
@@ -107,11 +109,15 @@ private:
 
   template <Version VERSION>
   void fill_as(const Layout& layout, std::span<const int> plane_y) {
-    auto* word_out{field_.data()};
+    auto* low_out{low_.data()};
+    auto* high_out{high_.data()};
     for (const int y : plane_y) {
       for (int z_index{0}; z_index < layout.hashed_rows; ++z_index)
-        for (int word{0}; word < layout.field_words; ++word)
-          *word_out++ = fill_word<VERSION>(layout, y, z_index, word);
+        for (int word{0}; word < layout.field_words; ++word) {
+          const auto pair{fill_word<VERSION>(layout, y, z_index, word)};
+          *low_out++ = pair.low;
+          *high_out++ = pair.high;
+        }
     }
   }
 
@@ -120,6 +126,7 @@ private:
     checks_.resize(direction.checks.size());
     prepare_plane_checks(layout, direction.checks, direction.offsets.data(), checks_);
     masks_.resize(static_cast<std::size_t>(layout.candidate_words));
+    xs_.resize(static_cast<std::size_t>(layout.candidate_words) * WORD_BITS);
 
     for (int y_row{0}; y_row < layout.ny; ++y_row) {
       const int y{layout.bounds.y_min + y_row};
@@ -127,16 +134,37 @@ private:
         const int z{layout.bounds.z_min + z_row};
         const int coset{residue(z)};
         const auto z_term{std::int64_t{z} * 116129781LL};
-        filter_row(layout, checks_.data(), direction.offsets.data(), field_.data(),
+        filter_row(layout, checks_.data(), direction.offsets.data(), low_.data(), high_.data(),
                    static_cast<std::size_t>(y_row), static_cast<std::size_t>(z_row), masks_.data());
+        // The row's survivors, then those that also have the first block the
+        // field does not cover. Which ones fail it is unpredictable, so they
+        // are dropped without a branch. The few left get the other blocks.
+        const int first{direction.verify_offsets[coset]}, last{direction.verify_offsets[coset + 1]};
+        std::size_t count{0};
         for (int word{0}; word < layout.candidate_words; ++word) {
-          for (auto survivors{masks_[word]}; survivors; survivors &= survivors - 1) {
-            const int x{layout.bounds.x_min + word * WORD_BITS + std::countr_zero(survivors)};
-            if (survivor_matches(job_.version, direction.verify.data(), direction.verify_offsets[coset],
-                                 direction.verify_offsets[coset + 1],
-                                 static_cast<std::uint32_t>(x) * 3129871u, z_term, y))
-              found.add({x, y, z});
+          for (auto survivors{masks_[word]}; survivors; survivors &= survivors - 1)
+            xs_[count++] = layout.bounds.x_min + word * WORD_BITS + std::countr_zero(survivors);
+        }
+        std::size_t kept{count};
+        if (first < last) {
+          const auto check{direction.verify[static_cast<std::size_t>(first)]};
+          kept = 0;
+          for (std::size_t i{0}; i < count; ++i) {
+            const int x{xs_[i]};
+            const int rotation{
+                texture_from_mix(job_.version,
+                                 coord_mix_from_parts(static_cast<std::uint32_t>(x) * 3129871u + check.x_term,
+                                                      z_term + check.z_term, y + check.y_offset),
+                                 4)};
+            xs_[kept] = x;
+            kept += (rotation & check.mask) == check.rotation;
           }
+        }
+        for (std::size_t i{0}; i < kept; ++i) {
+          const int x{xs_[i]};
+          if (survivor_matches(job_.version, direction.verify.data(), first < last ? first + 1 : first, last,
+                               static_cast<std::uint32_t>(x) * 3129871u, z_term, y))
+            found.add({x, y, z});
         }
       }
     }
@@ -144,9 +172,10 @@ private:
 
   Job& job_;
   std::vector<WorkerMatches> found_; // one per direction
-  std::vector<Planes> field_;
+  std::vector<Word> low_, high_;     // the field: each rotation bit of every field word
   std::vector<PlaneCheck> checks_;
   std::vector<Word> masks_; // one row of filter results
+  std::vector<int> xs_;     // x of the row's survivors
 };
 
 } // namespace

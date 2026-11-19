@@ -2532,3 +2532,84 @@ Whole CPU search, reference workload, kernel seconds, alternating runs
 
 "Before" already includes the per-version fill of 2026-11-16. The CPU e2e
 suite passes with bitplanes on and off.
+
+### CPU stage split, tile sizes again, and bit pairs in the Metal fill (M4 Pro, mains power, 2026-11-18)
+
+**CPU stage split after the bit-pair fill.** A build that fills the field but
+skips the match took 1.82 to 1.83 s where the full search took 2.67 to 2.71 s
+(reference workload, one direction; the two quietest of five alternating
+pairs, the others were disturbed by other load). The fill is about 68% of the
+search and the filter with its survivor checks about 0.85 s.
+
+**CPU tile sizes: no change.** Three runs each, kernel seconds:
+
+| Tile x × y × z | Runs |
+|---|---|
+| 4096 × 32 × 64 (default) | 2.690 2.688 2.671, and later 2.668 2.653 2.679 |
+| 16384 × 32 × 64 | 2.656 2.631 2.630 |
+| 32768 × 32 × 128 | 2.601 2.583 2.601 |
+| 16384 × 32 × 256 | 2.575 2.826 2.995, and later 2.570 2.546 2.558 |
+| 32768 × 32 × 256 | 2.739 2.742 2.658 |
+| 65536 × 32 × 256 | 2.811 2.749 2.698 |
+| 131072 × 32 × 256 | 2.788 2.697 2.711 |
+
+The best settings are 3 to 4% under the default, about the same as the
+spread between repeats of one setting, and they use a field several times
+larger per thread, which a CPU with a smaller cache would not like. The
+default stays.
+
+**Bit pairs in the shared fill on Metal: 1.3%, not adopted.** Packing 16
+rotations as pairs in a 32-bit register and splitting them once, in place of
+the two shift registers of `hash_word`, is exact (unit tests pass) and
+measured 0.605518 s against 0.613412 s for one direction and 1.513880 s
+against 1.519840 s for all four (medians of nine alternating runs, every run
+within 0.0003 s of its median). `hash_word` is also the CUDA fill, so
+adopting it means a GPU validation run for a gain this size. It can ride
+along with a later CUDA change if one is being validated anyway.
+
+### CPU match: separate planes and a branch-free first survivor check (M4 Pro, mains power, 2026-11-18)
+
+**Where the match time went.** With the bit-pair fill, builds that stop
+after the fill, after the filter, and the full search took about 1.83 s, 2.24
+to 2.50 s, and 2.67 s (reference workload, one direction). So the filter was
+roughly 0.45 s and the survivor checks roughly 0.35 s. The compiler already
+vectorises both filter loops (`-Rpass=loop-vectorize`: width 2, interleave
+4), so hand-written NEON was not tried there.
+
+**Field stored as two planes: about 4%.** The filter read `Planes{low,
+high}` pairs, so each loop skipped over the other plane. With the low and the
+high bits in separate arrays, eleven alternating pairs measured 2.811 s to
+2.699 s for one direction and 5.585 s to 5.336 s for all four.
+
+**First remaining block checked without a branch: 6% and 12% on top.** The
+row's survivors are listed, the first block the field does not cover is
+hashed for each, and those that have it are kept by a branch-free
+compaction; only they go through the remaining blocks with the usual early
+exit. Nine alternating pairs against the separate-planes build: 2.605 s to
+2.456 s for one direction and 5.373 s to 4.747 s for all four. Three in four
+survivors fail that first block and which ones is unpredictable, so the old
+loop paid a mispredicted branch for most of them.
+
+**Every remaining block that way: slightly slower, not adopted.** 2.509 s
+against 2.527 s, and 4.717 s against 4.859 s. After the first block few
+candidates are left and the early exit wins.
+
+Both adopted changes together, from the tree, against the build of
+`e6dc7da`, kernel seconds, alternating runs (nine for version 0, three for
+the others), medians. Another application was using CPU during this set, so
+the absolute times are a little higher than in the sections above.
+
+| Version | Directions | Before | After | Change |
+|---|---|---:|---:|---:|
+| 0 modern | one | 2.739 | 2.583 | -5.7% |
+| 0 modern | all four | 5.682 | 4.769 | -16.1% |
+| 1 legacy | one | 3.326 | 3.208 | -3.5% |
+| 2 vanilla12 | one | 2.339 | 2.123 | -9.3% |
+| 3 sodium | one | 7.113 | 7.048 | -0.9% |
+| 4 sodium19 | one | 5.502 | 5.256 | -4.5% |
+
+Checks on the CPU build: unit tests (the row filter must equal `filter_word`
+for every word of the brute-force case), the e2e suite with bitplanes on and
+off, 150 random formations (300 runs, 87 on bitplanes, 131 with several
+matches) identical to the plain scan, and the 7,283-match dense volume
+identical to the plain scan.
